@@ -32,6 +32,17 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.local.example
+
+# real CV / personal data (public repo ships a placeholder resume.ts instead)
+src/data/resume.local.ts
+
+# Claude Code local config + vendored skills — track only our own skill/command
+.claude/settings.local.json
+.claude/skills/*
+!.claude/skills/screen-remote-jobs/
+.claude/commands/*
+!.claude/commands/screen-remote-jobs.md
 
 # vercel
 .vercel
@@ -39,3 +50,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# job bot artifacts
+.job-cache.json
+.jobs-raw.json
+.jobs.db
+.jobs.db-shm
+.jobs.db-wal
+jobs-digest.html

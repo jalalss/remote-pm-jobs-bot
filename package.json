@@ -6,12 +6,29 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "jobs": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts all",
+    "jobs:fetch": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts fetch",
+    "jobs:classify": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts classify",
+    "jobs:render": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts render",
+    "jobs:langcheck": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts langcheck",
+    "jobs:reject": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts reject",
+    "jobs:migrate": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts migrate",
+    "jobs:test": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@fontsource/playfair-display": "^5.2.8",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.11.1",
+    "framer-motion": "^12.41.0",
+    "franc": "^6.2.0",
+    "lucide-react": "^1.21.0",
     "next": "16.2.9",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "rss-parser": "^3.13.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -21,6 +38,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.9",
     "tailwindcss": "^4",
+    "tsx": "^4.23.0",
     "typescript": "^5"
   }
 }
