@@ -37,7 +37,11 @@ yarn-error.log*
 # real CV / personal data (public repo ships a placeholder resume.ts instead)
 src/data/resume.local.ts
 
+# job-application materials (cover letters etc. — contain real PII, never publish)
+applications/
+
 # Claude Code local config + vendored skills — track only our own skill/command
+.claude/settings.json
 .claude/settings.local.json
 .claude/skills/*
 !.claude/skills/screen-remote-jobs/
