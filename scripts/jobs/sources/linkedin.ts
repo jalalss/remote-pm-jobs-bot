@@ -27,6 +27,7 @@ const REGION_NAMES: Record<string, string> = {
   "91000000": "EU",
   "103644278": "US",
   "101165590": "UK",
+  "91000003": "APAC",
 };
 const regionName = (geoId: string) => REGION_NAMES[geoId] ?? `geo:${geoId}`;
 

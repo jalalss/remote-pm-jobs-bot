@@ -30,11 +30,22 @@ function relativeAge(iso: string | undefined): string {
   return `${date} · ${days} days ago`;
 }
 
-// Sort key: newest first; unknown/invalid dates sort last.
-function postedTime(job: ClassifiedJob): number {
-  if (!job.postedAt) return -Infinity;
+// Absolute post time in epoch ms, or null when unknown/invalid.
+function postedMs(job: ClassifiedJob): number | null {
+  if (!job.postedAt) return null;
   const t = new Date(job.postedAt).getTime();
-  return Number.isNaN(t) ? -Infinity : t;
+  return Number.isNaN(t) ? null : t;
+}
+
+// Flat display order: undated jobs first (so an edge-case posting with no date is
+// never lost), then dated jobs newest → oldest.
+function byPostedDesc(a: ClassifiedJob, b: ClassifiedJob): number {
+  const am = postedMs(a);
+  const bm = postedMs(b);
+  if (am === null && bm === null) return 0;
+  if (am === null) return -1;
+  if (bm === null) return 1;
+  return bm - am;
 }
 
 function card(job: ClassifiedJob): string {
@@ -49,9 +60,14 @@ function card(job: ClassifiedJob): string {
   const tz = c.timezoneRequirement
     ? `<span class="meta">Timezone: ${escapeHtml(c.timezoneRequirement)}</span>`
     : "";
+  // Absolute timestamp for the client-side date filter (empty when unknown). The
+  // window comparison runs against the browser's live clock at click time, so the
+  // digest stays correct as days pass without re-rendering.
+  const ms = postedMs(job);
+  const postedAttr = ms === null ? "" : String(ms);
 
   return `
-  <article class="card ${c.verdict}" data-verdict="${c.verdict}" data-source="${escapeHtml(job.source)}">
+  <article class="card ${c.verdict}" data-verdict="${c.verdict}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}">
     <div class="head">
       <span class="badge ${c.verdict}">${c.verdict}</span>
       ${newBadge}
@@ -62,7 +78,7 @@ function card(job: ClassifiedJob): string {
       <span class="dot">·</span>
       <span class="src">${escapeHtml(sourceLabel(job.source))}</span>
       <span class="dot">·</span>
-      <span>${escapeHtml(relativeAge(job.postedAt))}</span>
+      <span class="posted">${escapeHtml(relativeAge(job.postedAt))}</span>
     </div>
     <p class="reason">${escapeHtml(c.reason)}</p>
     ${evidence}
@@ -70,15 +86,6 @@ function card(job: ClassifiedJob): string {
     ${recruiter}
     <p><a href="${escapeHtml(job.url)}" target="_blank" rel="noopener">Open posting →</a></p>
   </article>`;
-}
-
-function section(title: string, jobs: ClassifiedJob[], verdict: Verdict): string {
-  const sorted = [...jobs].sort((a, b) => postedTime(b) - postedTime(a));
-  const cards = sorted.map(card).join("\n") || `<p class="none">None.</p>`;
-  return `<section class="group" data-verdict="${verdict}">
-    <h2 class="${verdict}">${title} <span class="count">(${jobs.length})</span></h2>
-    ${cards}
-  </section>`;
 }
 
 export function renderDigest(jobs: ClassifiedJob[]): string {
@@ -104,6 +111,9 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
         `<button class="chip source active" data-type="source" data-value="${escapeHtml(s)}">${escapeHtml(sourceLabel(s))} <span class="chip-n">${sourceCounts.get(s)}</span></button>`,
     )
     .join("");
+
+  // Flat list: undated first, then newest → oldest.
+  const listCards = [...jobs].sort(byPostedDesc).map(card).join("\n") || `<p class="none">No jobs.</p>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -131,10 +141,9 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
   .chip.verdict.MAYBE.active { background: #bf8700; }
   .chip.verdict.REJECT.active { background: #cf222e; }
   .chip-n { opacity: .7; font-size: 11px; }
+  #date-filter { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px;
+                 border: 1px solid #ccc; background: transparent; color: #444; cursor: pointer; }
   .showing { font-size: 12px; color: #888; margin-top: 8px; }
-  h2 { font-size: 18px; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 2px solid #eee; }
-  h2.PASS { color: #1a7f37; } h2.MAYBE { color: #9a6700; } h2.REJECT { color: #82071e; }
-  .count { color: #999; font-weight: normal; font-size: 14px; }
   .card { background: #fff; border: 1px solid #e5e5e5; border-left-width: 4px;
           border-radius: 8px; padding: 14px 16px; margin: 10px 0; }
   .card.PASS { border-left-color: #1a7f37; }
@@ -147,6 +156,7 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
   .new { font-size: 10px; font-weight: 700; color: #0969da; border: 1px solid #0969da; border-radius: 4px; padding: 1px 5px; }
   .sub { color: #666; font-size: 13px; margin: 4px 0 8px; }
   .sub .src { font-weight: 600; }
+  .sub .posted { font-weight: 600; color: #444; }
   .dot { margin: 0 4px; color: #ccc; }
   .reason { margin: 6px 0; }
   blockquote { margin: 8px 0; padding: 6px 12px; background: #f6f8fa; border-left: 3px solid #d0d7de;
@@ -160,11 +170,12 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
     body { color: #e6edf3; background: #0d1117; }
     .filters { background: #0d1117; border-color: #30363d; }
     .chip { border-color: #444c56; color: #8b949e; }
+    #date-filter { border-color: #444c56; color: #c9d1d9; }
     .card { background: #161b22; border-color: #30363d; }
-    h2 { border-color: #30363d; }
     blockquote { background: #21262d; border-left-color: #444c56; color: #c9d1d9; }
     .ask { background: #2d2410; }
     .summary, .sub, .meta, .showing { color: #8b949e; }
+    .sub .posted { color: #c9d1d9; }
   }
 </style>
 </head>
@@ -176,29 +187,41 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
 <div class="filters">
   <div class="filter-row"><span class="filter-label">Verdict</span>${verdictChips}</div>
   <div class="filter-row"><span class="filter-label">Source</span>${sourceChips}</div>
+  <div class="filter-row"><span class="filter-label">Posted</span>
+    <select id="date-filter">
+      <option value="0" selected>Anytime</option>
+      <option value="1">Last 24 hours</option>
+      <option value="7">Last 7 days</option>
+      <option value="30">Last 30 days</option>
+    </select>
+  </div>
   <div class="showing">Showing <span id="shown-count">0</span> of ${jobs.length} jobs · click chips to toggle</div>
 </div>
-${section("✅ PASS — worth applying now", pass, "PASS")}
-${section("🟡 MAYBE — apply + ask the recruiter", maybe, "MAYBE")}
-${section("❌ REJECT — filtered out", reject, "REJECT")}
+<div id="job-list">
+${listCards}
+</div>
 <script>
 (function () {
+  var DAY_MS = 86400000;
   var state = { verdict: {}, source: {} };
   var chips = document.querySelectorAll('.chip');
   chips.forEach(function (c) { state[c.dataset.type][c.dataset.value] = c.classList.contains('active'); });
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
-  var groups = Array.prototype.slice.call(document.querySelectorAll('.group'));
   var countEl = document.getElementById('shown-count');
+  var dateSel = document.getElementById('date-filter');
+  function withinWindow(card) {
+    var days = parseInt(dateSel.value, 10);
+    if (!days) return true;                 // Anytime
+    var raw = card.dataset.postedMs;
+    if (!raw) return true;                   // undated → always visible, never lost
+    return (Date.now() - parseInt(raw, 10)) <= days * DAY_MS;
+  }
   function apply() {
     var shown = 0;
     cards.forEach(function (card) {
-      var show = state.verdict[card.dataset.verdict] && state.source[card.dataset.source];
+      var show = state.verdict[card.dataset.verdict] && state.source[card.dataset.source] && withinWindow(card);
       card.style.display = show ? '' : 'none';
       if (show) shown++;
-    });
-    groups.forEach(function (g) {
-      var any = Array.prototype.slice.call(g.querySelectorAll('.card')).some(function (c) { return c.style.display !== 'none'; });
-      g.style.display = any ? '' : 'none';
     });
     if (countEl) countEl.textContent = shown;
   }
@@ -210,6 +233,7 @@ ${section("❌ REJECT — filtered out", reject, "REJECT")}
       apply();
     });
   });
+  dateSel.addEventListener('change', apply);
   apply();
 })();
 </script>

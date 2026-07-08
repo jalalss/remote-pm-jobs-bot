@@ -84,17 +84,21 @@ export const config = {
   /**
    * LinkedIn (public guest endpoints). LinkedIn's search is non-deterministic — the same
    * query returns varying partial subsets — so we REPEAT each search and UNION the results
-   * until it plateaus. LinkedIn also has no "worldwide" location, so searches are segmented
-   * by region (geoId). We rely on OUR classifier (not LinkedIn's f_WT) to decide remote.
+   * until it plateaus. We segment by region (geoId) rather than use LinkedIn's single
+   * Worldwide location (92000000): until we've verified Worldwide returns comparable
+   * coverage, segmented regions are the safer way to maximize unique jobs. If it ever
+   * proves equivalent, Worldwide could replace all the regional entries below.
+   * We rely on OUR classifier (not LinkedIn's f_WT) to decide remote.
    *
-   * geoId cheatsheet: European Union 91000000 · United States 103644278 · United Kingdom
-   * 101165590 · Germany 101282230 · Spain 105646813 · Canada 101174742 · India 102713980.
-   * f_WT: 2=Remote. f_TPR: r604800=past 7 days.
+   * geoId cheatsheet: Worldwide 92000000 · European Union 91000000 · APAC 91000003 ·
+   * United States 103644278 · United Kingdom 101165590 · Germany 101282230 · Spain 105646813 ·
+   * Canada 101174742 · India 102713980. f_WT: 2=Remote. f_TPR: r604800=past 7 days.
    */
   linkedinSearches: [
     { keywords: '"product manager"', geoId: "91000000", f_WT: "2", f_TPR: "r604800" },  // EU · Remote · 7d
     { keywords: '"product manager"', geoId: "103644278", f_WT: "2", f_TPR: "r604800" }, // US · Remote · 7d
     { keywords: '"product manager"', geoId: "101165590", f_WT: "2", f_TPR: "r604800" }, // UK · Remote · 7d
+    { keywords: '"product manager"', geoId: "91000003", f_WT: "2", f_TPR: "r604800" },  // APAC · Remote · 7d
   ] as { keywords: string; geoId: string; f_WT?: string; f_TPR?: string }[],
   /** Repeat each search up to this many times (union), stopping early once it plateaus. */
   linkedinRepeats: 10,
