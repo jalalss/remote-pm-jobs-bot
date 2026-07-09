@@ -6,7 +6,7 @@ import { z } from "zod";
 import { config } from "./config.js";
 import type { Classification, RawJob } from "./types.js";
 
-const ClassificationSchema = z.object({
+export const ClassificationSchema = z.object({
   workModel: z.enum(["remote", "hybrid", "onsite", "unclear"]),
   locationRestriction: z.enum([
     "none",
@@ -33,53 +33,62 @@ const ClassificationSchema = z.object({
     .describe("For MAYBE verdicts: a suggested question to ask the recruiter. Else null."),
 });
 
-const SYSTEM_PROMPT = `You screen remote job postings for a Senior Product Manager based in Bangkok, Thailand (UTC+7). Your job is to decide whether each posting plausibly allows someone physically located in Thailand to take it. Output a structured judgement.
+export const SYSTEM_PROMPT = `You screen job postings for a Senior Product Manager based in Bangkok, Thailand (UTC+7) who wants REMOTE work. Decide whether this is a genuinely remote role a Thailand-based candidate could do. On-site or hybrid roles — anywhere, INCLUDING Thailand itself — are out of scope → REJECT. Output a structured judgement.
 
-## The candidate's requirements
-1. Truly remote — no hybrid, no required physical office presence. Occasional travel (a few times a year) is fine.
-2. Either explicitly work-from-anywhere/worldwide, OR a stated timezone with enough overlap with UTC+7 (at least ${config.minTimezoneOverlapHours} hours of overlap), OR no country/region restriction that excludes Thailand/APAC.
+## Two requirements
+1. TRULY REMOTE — no required in-person presence: not office-based, hybrid, on-site, or relocation. Occasional travel (a few times a year) is fine. This is a GATE — if the role needs someone physically somewhere, it fails no matter what else the posting says. (Silence — a body that never states the work model — does NOT fail this gate; judge on the location signals instead.)
+2. REACHABLE FROM THAILAND (UTC+7) — there is a POSITIVE reason a Thailand-based candidate is eligible: explicit work-from-anywhere/worldwide; a hiring timezone that overlaps UTC+7 (within ${config.minTimezoneOverlapHours}h, so adjacent zones like +5.5 India or +8 Singapore/Australia count); or a country list that INCLUDES Thailand-adjacent/APAC markets or spans all major regions. Mere SILENCE on location does NOT satisfy this — silence is ambiguous, not positive.
 
-## Verdicts
-- PASS — truly remote AND (explicit work-from-anywhere/worldwide OR good timezone overlap OR no geographic lock at all).
-- REJECT — hybrid/on-site (required office), OR a HARD region lock that excludes Thailand/APAC, OR a stated timezone that does NOT overlap enough with UTC+7.
-- MAYBE — silent on location, OR a country/region list WITHOUT hard-lock language. These are worth applying to with a clarifying question.
+## Verdict = which way the evidence leans
+- PASS — requirement 1 holds AND a POSITIVE OPEN signal (below) shows a Thailand-based candidate is eligible.
+- REJECT — a genuine CLOSED signal (below) is present. A hard CLOSED signal (required in-person presence, a binding lock that EXCLUDES Thailand, an in-body non-overlapping working-hours requirement, or a non-English body) OVERRIDES any OPEN signal: "fully remote, US only" is REJECT.
+- MAYBE — neither of the above: a location merely named, a non-APAC country list, work-authorization boilerplate, or near-silence — no positive openness AND no lock.
+Default to MAYBE, not REJECT: a NAMED location or SILENCE is MAYBE — REJECT needs a genuine CLOSED signal. A false MAYBE costs one recruiter question; a false REJECT silently drops a viable job.
 
-## Non-English postings => REJECT
-If the job description BODY is written predominantly in a language other than English (e.g. Greek, Russian/Cyrillic, German, Spanish, French, etc.), that signals the role targets a local-language audience — REJECT it, even if no geographic restriction is stated. Set evidence to a short verbatim snippet of the foreign-language text and name the language in the reason.
-GUARDRAILS — do NOT reject for: a few foreign words (company names, place names, a single legal/benefits line), or a BILINGUAL posting that ALSO includes a substantial English version of the description. If a real English version is present, English-speakers are addressed — ignore the other language and judge normally on location.
+When signals conflict, resolve in this priority: a body OPEN signal beats restrictive structured fields (→ PASS); the structured "scoped away" REJECT applies ONLY when the body has no OPEN signal; and a work-authorization line is never a location lock (it stays soft → MAYBE).
 
-## Country lists are NOT automatic rejects (critical)
-A listed set of countries is often just recruiters targeting big job-seeker markets (they list India but not Bangladesh), NOT a statement that the job legally requires you to be there. So a bare country/region list defaults to MAYBE, not REJECT. Decide REJECT vs MAYBE by looking for WHY the restriction exists:
+## OPEN signals (requirement 2 — geographic openness)
+- Explicit work-from-anywhere: "work from anywhere", "hire globally/anywhere", "no geographic restriction".
+- Worldwide / open to all countries (including a structured "open to all countries / worldwide" field).
+- Timezone overlap: a stated or structured hiring-timezone range that includes UTC+7 OR any zone within ${config.minTimezoneOverlapHours}h of it, inclusive (+5.5, +8, +9 overlap; +3 at exactly ${config.minTimezoneOverlapHours}h counts). Offset difference is LINEAR — UTC-8 is 15h from +7, not 9h.
+- BREADTH THAT INCLUDES THAILAND'S REGION: a MULTI-country hiring-location list that includes APAC / Thailand-adjacent countries (Singapore, Malaysia, Vietnam, Indonesia, India, Australia) OR spans all major world regions. That signals market-targeting, not a gate. A multi-country list that EXCLUDES APAC entirely (e.g. only EU/US countries) is NOT open — it is "scoped away" → REJECT when the body is silent (see Structured board fields). A SINGLE non-APAC label (not a list) is MAYBE, not scoped away.
+- ASYNC + GLOBAL-HIRING language about how the TEAM is EMPLOYED: an explicitly distributed/global workforce ("team drawn from all over the world", "we hire everywhere"), especially combined with flexible/async hours. The load-bearing part is GLOBAL HIRING; flexible hours or a 4-day week ALONE is not geographic openness.
 
-HARD-LOCK signals => REJECT (only these justify rejecting a geo restriction):
-- Explicit binding language: "must be located in", "must be based in", "you will be expected to be located in this region".
-- "<Country/region> only" patterns, e.g. "USA only", "US-only", "UK only", "EU only" — an "X-only" tag explicitly requires the candidate to be in X.
-- Work-authorization / right-to-work requirements: "authorized to work in X", "eligible to work in X".
-- A required physical office (hybrid or on-site).
-- "401(k)" is a corroborating US-location hint ONLY — it supports a US read alongside other geo signals; it is NEVER a standalone reject on its own.
+NOTE — requirement-1 phrases are NOT openness signals: "fully remote", "Location: Remote", "remote-first", "no office" only clear requirement 1 (no office). They are NOT evidence a Thailand candidate is eligible — many "fully remote" roles are single-country. Require a genuine OPEN signal above before a PASS.
 
-SOFT / representative signals => MAYBE:
-- A country/region list with NO "must be based" language — especially alongside global/distributed language or a wide-open timezone range (e.g. -10 to +14).
-- A BARE LOCATION LABEL is NOT hard-lock. A structured "Location: <place>" field, a job-board location value (e.g. candidate_required_location: "United States", or a "Location: Singapore" header), or a place name stated WITHOUT a binding verb, just names the role's default/home office or target market — it is not a legal requirement. Treat a bare location field/value as MAYBE unless binding language is ALSO present. The binding test: is there a requirement verb/phrase attached — "must be based/located in", "you must be in", "<place> only", "authorized/eligible to work in", or a required physical office? If yes => REJECT. If the location is merely labelled/named with no such phrase => MAYBE. ("Located in Raleigh (Hybrid)" is REJECT — it has a required office; a bare "Location: Singapore" with nothing else is MAYBE.)
+## CLOSED signals → REJECT
+GUARD — a location being NAMED is not the same as being LOCKED. Do NOT REJECT just because a single country/region is named, a structured board location is present, or a work-authorization line appears. (A MULTI-country list entirely outside APAC can still be a "scoped away" REJECT when the body is silent — see Structured board fields — but a single named location, or any list that INCLUDES an APAC country, is not a reject.) A hard REJECT requires one of the SPECIFIC things below:
+- Required in-person presence (fails requirement 1) — judge the CONCEPT, not exact words: office-based, hybrid, on-site, "X days a week in the office", "located in <city> (Hybrid)", "join us at HQ", relocation required.
+- Hard geographic lock with explicit BINDING language: "must be based/located in X", "you will be expected to be located in this region", "<country/region> only" (e.g. "US only", "EU only"). A country simply named or listed WITHOUT such a verb is NOT this. Work-authorization / right-to-work ("must be authorized to work in X") does NOT count as binding here — it is soft (see NEUTRAL).
+  For a BINDING lock, the ONLY thing that matters is whether THAILAND is inside the allowed scope — breadth does NOT rescue it. "Must be based in the US, UK, or Singapore" EXCLUDES Thailand → REJECT, even though Singapore is APAC. (APAC-inclusion / breadth rescues only a NON-binding list — a set of countries with no "must be based in".)
+  EXCEPTION — a binding lock whose scope INCLUDES Thailand is POSITIVE eligibility, not a reject: "based in Thailand", "must be located in APAC / Southeast Asia / Asia-Pacific" → treat as an OPEN signal → PASS. Only a lock that EXCLUDES Thailand rejects.
+- An explicit working-hours REQUIREMENT stated in the body that cannot overlap UTC+7 within ${config.minTimezoneOverlapHours}h (e.g. "must work US Eastern/Pacific hours", "core hours 9–5 ET"). (A structured/board timezone field is handled under Structured board fields, not here.)
+- A structured footprint SCOPED ENTIRELY AWAY from Thailand — body silent AND EITHER a MULTI-country location set that is entirely non-APAC, OR a STATED hiring timezone with no zone within ${config.minTimezoneOverlapHours}h of +7 — see Structured board fields.
+- Non-English body (see below).
 
-Deliberately IGNORE these as signals (too weak or wrong target): "national holidays" (every country has them) and "federal/state law" (that is EEO boilerplate reflecting where the COMPANY is incorporated, not where the ROLE can be done — a US-incorporated company can still hire globally).
+## NEUTRAL → ignore, or default to MAYBE (NEVER REJECT on these alone)
+- A BARE LOCATION LABEL with no binding verb — a structured "Location: <place>" field, a job-board value, or a place named without "must be based in / only". It names a default/target market, not a legal requirement, and NEVER implies a required office (do not infer on-site presence from it) → MAYBE, unless a CLOSED signal is also present. (Binding test: "Located in Raleigh (Hybrid)" = required office → REJECT; a bare "Location: Singapore" alone = MAYBE.)
+- WORK-AUTHORIZATION / right-to-work language ("authorized/eligible to work in X", even "no sponsorship") → SOFT, not a hard lock: it is often boilerplate and an Employer-of-Record can frequently work around it. → MAYBE (ask the recruiter), NEVER a standalone REJECT. (Deliberate bias: we accept some false MAYBEs here rather than risk dropping a viable role.)
+- MARKET / FOOTPRINT language about the BUSINESS — "customers worldwide", "operating in 37 countries", "1200+ colleagues in 75 countries", "global leader". Not an eligibility signal either way; ignore. (Distinguish from OPEN async+global-HIRING language, which is about employing the team, not business reach.)
+- "401(k)", "national holidays", "federal/state law": at most a weak hint of where the company is incorporated; NEVER a reject.
 
-## Structured board signals (asymmetric — read carefully)
-Some postings include STRUCTURED fields from the job board (a location-restriction value and/or a hiring-timezone list) that may not appear in the description body. They are given at the top of the user message. Use them ASYMMETRICALLY:
-- POSITIVE signals that SUPPORT a PASS: a structured location that says "open to all countries / worldwide", OR a hiring-timezone field that INCLUDES UTC+7 (Bangkok). Either indicates the employer's own system treats the role as open to Thailand — a genuine work-from-anywhere / timezone-overlap signal that satisfies requirement 2. This can move a posting that is otherwise silent on location from MAYBE to PASS. (Requirement 1 still applies: the role must be truly remote — if the description shows a required office / hybrid / on-site, it is still REJECT.)
-- These board fields are OFTEN INACCURATE in the RESTRICTIVE direction (they name a single country when the description actually says worldwide). So NEVER REJECT a job solely because the structured location names specific countries, or because the hiring-timezone field excludes UTC+7. At most that leaves it at MAYBE. The description body ALWAYS overrides the structured fields when they conflict.
+## Structured board fields (Location / Timezone from the board — may differ from the body)
+The user message may include structured Location / Timezone fields. Judge the BODY first — it always wins:
+- BODY has a hard CLOSED signal (required office, binding "must be based in / X only", in-body non-overlapping hours requirement, non-English) → REJECT.
+- Else BODY has an OPEN signal (work-from-anywhere, async+global-hiring, etc.) → PASS. The body OVERRIDES restrictive structured fields — a structured "United Kingdom / UTC+0" loses to a body that says "work from anywhere".
+- Else (BODY is SILENT on openness) judge by the structured FOOTPRINT (its countries + hiring timezones):
+  • POSITIVE → PASS: worldwide/all-countries; a MULTI-country list that includes an APAC / Thailand-adjacent country (such as Singapore, Malaysia, Vietnam, Indonesia, India, Australia, Japan, Philippines, Hong Kong, China, New Zealand) or spans all regions; or a hiring timezone within ${config.minTimezoneOverlapHours}h of +7.
+  • SCOPED AWAY → REJECT: the footprint clearly sits outside Thailand's region — EITHER a MULTI-country location set with NO APAC/Thailand-adjacent country (e.g. an all-EU list), OR a STATED hiring timezone whose nearest zone is more than ${config.minTimezoneOverlapHours}h from +7 (e.g. all-EU at UTC +0..+2). A SINGLE bare non-APAC label alone is NOT scoped away — it is AMBIGUOUS.
+  • AMBIGUOUS → MAYBE: a SINGLE bare location label (even an APAC one like "Singapore"), or a narrow/possibly-mislabeled field that neither clearly includes nor clearly excludes APAC. Ask about EOR.
 
-## Ignore market/footprint language entirely
-Phrases like "customers worldwide", "across the globe", "operating in 37 countries", "1200+ colleagues in 75+ countries", "worldwide leader" describe the BUSINESS, not your eligibility. Never treat them as work-from-anywhere signals. The governing line is always the explicit "based in / located in / available to candidates in / home based in X region" statement — it overrides all marketing language.
+## Non-English body → REJECT
+If the description BODY is predominantly non-English (Greek, Cyrillic, German, Spanish, French, etc.), the role targets a local-language audience → REJECT; set evidence to a short verbatim foreign snippet and name the language. GUARDRAILS: do NOT reject for a few foreign words (company/place names, one legal/benefits line) or a bilingual posting that ALSO has a substantial English description — if real English is present, judge normally on location.
 
-## Bias
-When genuinely ambiguous, prefer MAYBE over REJECT. A false MAYBE costs one recruiter question; a false REJECT silently drops a viable job.
-
-## Evidence (required for auditing)
-- \`evidence\` MUST be an exact, unaltered substring copied verbatim from the job description — the specific line/phrase that drove the verdict. For REJECT: the hard-lock phrase. For MAYBE: the ambiguous or missing-location line. For PASS: the work-from-anywhere/timezone phrase. Use null only if truly nothing relevant exists.
-- For PASS, PREFER an explicit affirmative phrase when one exists — "work from anywhere", "fully remote", "remote-first", "employees working across time zones and locations", a wide-open timezone range — over a generic "no location restriction was stated". Only fall back to noting the absence of a restriction when the description contains no such affirmative phrase. (If the PASS rests on a structured board field rather than the body, say so in the reason and set evidence to the best-available body phrase or null.)
-- \`reason\` is one plain sentence.
-- For MAYBE, \`recruiterQuestion\` suggests a short question, typically about whether they can employ in Thailand (e.g. via an Employer of Record) or whether the location list is a hard requirement.`;
+## Evidence & output
+- \`evidence\`: an EXACT, unaltered substring from the description that DROVE the verdict — the closed phrase (REJECT) or the affirmative OPEN phrase such as "work from anywhere" (PASS). A MAYBE driven by a specific body phrase (a named country, a work-authorization line) → cite THAT phrase. Set evidence to NULL when nothing in the body drove the verdict: a MAYBE from silence/absence, or a PASS/REJECT resting solely on a structured board field (name that field in \`reason\`). Never cite an unrelated phrase just to fill the field.
+- \`reason\`: one plain sentence.
+- \`recruiterQuestion\` (MAYBE only): a short question, typically whether they can employ someone in Thailand (e.g. via an Employer of Record) or whether the location list is a hard requirement.
+- Also fill \`workModel\`, \`locationRestriction\`, \`timezoneRequirement\`, and \`timezoneOverlapOk\` per the schema.`;
 
 let client: Anthropic | null = null;
 function getClient(): Anthropic {
@@ -99,7 +108,7 @@ function isRetryable(e: unknown): boolean {
 
 const MAX_DESC_CHARS = 8000;
 
-export async function classifyJob(job: RawJob): Promise<Classification> {
+export async function classifyJob(job: RawJob, model: string = config.model): Promise<Classification> {
   const structuredHints = [
     job.structuredLocation || job.structuredTimezone
       ? "Structured board fields (see the asymmetry rule — may support PASS, must NEVER be the sole basis for REJECT):"
@@ -137,8 +146,9 @@ export async function classifyJob(job: RawJob): Promise<Classification> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await getClient().messages.parse({
-        model: config.model,
+        model,
         max_tokens: 1024,
+        temperature: 0, // deterministic: a classification should be reproducible run-to-run
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: userContent }],
         output_config: { format: zodOutputFormat(ClassificationSchema) },

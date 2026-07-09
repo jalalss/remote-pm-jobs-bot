@@ -24,6 +24,7 @@ interface HimalayasResponse {
 }
 
 const BANGKOK_OFFSET = 7; // UTC+7
+const fmtOffset = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
 
 // NOTE: use the guid/applicationLink URL EXACTLY as given — do NOT strip the trailing
 // numeric job ID. Himalayas posts the same role once per country under a shared base slug
@@ -32,27 +33,35 @@ const BANGKOK_OFFSET = 7; // UTC+7
 // Himalayas redirects to /jobs. (An occasional numbered link that 404s is an EXPIRED
 // posting, which no URL transform can fix.)
 
-// A worldwide role shows up as an EMPTY locationRestrictions plus a globe-spanning
-// timezone list. Require corroborating timezone breadth so a merely-missing location
-// field isn't mislabelled worldwide.
+// Location hint. Empty restrictions + a globe-spanning timezone list = worldwide. A list of
+// several countries is reported as a BROAD list (breadth is a market-targeting signal the
+// classifier reads as open); a short list is passed through as-is.
 function locationHint(j: HimalayasJob): string | undefined {
   const loc = j.locationRestrictions ?? [];
-  if (loc.length) return loc.join(", ");
   const tz = j.timezoneRestrictions ?? [];
-  const global = tz.includes(BANGKOK_OFFSET) || tz.length >= 30;
-  return global ? "Open to all countries (worldwide) — Himalayas structured field" : undefined;
+  if (!loc.length) {
+    const worldwide = tz.length >= 30 || tz.includes(BANGKOK_OFFSET);
+    return worldwide ? "Open to all countries (worldwide) — Himalayas structured field" : undefined;
+  }
+  return loc.length >= 5
+    ? `Broad multi-country list (${loc.length} countries): ${loc.join(", ")}`
+    : loc.join(", ");
 }
 
+// Timezone hint. Reports the span and whether ANY hiring zone overlaps UTC+7 within the
+// configured window — adjacent zones (e.g. +5.5 India, +8 Singapore/Australia) count as
+// overlap, so proximity to Bangkok reads as a positive signal, not a miss.
 function timezoneHint(tz: number[] | undefined): string | undefined {
   if (!tz || !tz.length) return undefined;
-  const fmt = (n: number) => (n >= 0 ? `+${n}` : `${n}`);
-  const list = tz.map(fmt).join(", ");
-  if (tz.includes(BANGKOK_OFFSET)) {
-    return tz.length >= 30
-      ? "Hiring timezones include UTC+7 (Bangkok); range spans the globe"
-      : `Hiring timezones (UTC ${list}) INCLUDE UTC+7 (Bangkok)`;
-  }
-  return `Hiring timezones (UTC ${list}) do NOT include UTC+7 (Bangkok)`;
+  const nearest = tz.reduce((b, o) => (Math.abs(o - BANGKOK_OFFSET) < Math.abs(b - BANGKOK_OFFSET) ? o : b), tz[0]);
+  const dist = Math.abs(nearest - BANGKOK_OFFSET);
+  const overlaps = dist <= config.minTimezoneOverlapHours;
+  const lo = Math.min(...tz), hi = Math.max(...tz);
+  const span = lo === hi ? `1 zone (UTC ${fmtOffset(lo)})` : `${tz.length} zones (UTC ${fmtOffset(lo)}..${fmtOffset(hi)})`;
+  const near = `nearest to UTC+7 is UTC${fmtOffset(nearest)} (${dist}h away)`;
+  return overlaps
+    ? `Hiring timezones: ${span}; ${near} — OVERLAPS with UTC+7 (Bangkok, within ${config.minTimezoneOverlapHours}h).`
+    : `Hiring timezones: ${span}; ${near} — no overlap with UTC+7 (Bangkok).`;
 }
 
 function mapJob(j: HimalayasJob): RawJob {
