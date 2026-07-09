@@ -1,7 +1,7 @@
 // CLI dispatcher for the job bot's independent stages.
 //   all (default)  fetch -> classify -> render
 //   fetch          pull sources -> .jobs-raw.json           (no API key)
-//   classify       .jobs-raw.json -> .job-cache.json        (needs API key; --force reclassifies all)
+//   classify       score jobs in the DB                     (needs API key; --force reclassifies all, --source <name> limits to one board)
 //   render         stores -> jobs-digest.html               (no API key, no network)
 //   langcheck      free sweep: non-English PASS/MAYBE -> REJECT   (no API key)
 //   reject <ids…>  force-REJECT specific jobs                (no API key)
@@ -17,13 +17,15 @@ function requireApiKey() {
 async function main() {
   const [cmd = "all", ...args] = process.argv.slice(2);
   const force = args.includes("--force");
+  const sourceIdx = args.indexOf("--source");
+  const source = sourceIdx >= 0 ? args[sourceIdx + 1] : undefined;
   switch (cmd) {
     case "fetch":
       await runFetch();
       break;
     case "classify":
       requireApiKey();
-      await runClassify(force);
+      await runClassify({ force, source });
       break;
     case "render":
       runRender();
@@ -40,11 +42,11 @@ async function main() {
     case "all":
       requireApiKey();
       await runFetch();
-      await runClassify(force);
+      await runClassify({ force, source });
       runRender();
       break;
     default:
-      console.error(`Unknown command "${cmd}". Use: all | fetch | classify [--force] | render | langcheck | reject <ids...> | migrate`);
+      console.error(`Unknown command "${cmd}". Use: all | fetch | classify [--force] [--source <name>] | render | langcheck | reject <ids...> | migrate`);
       process.exit(1);
   }
 }

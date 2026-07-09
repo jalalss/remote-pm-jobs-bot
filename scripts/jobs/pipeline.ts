@@ -105,10 +105,12 @@ export async function runFetch(): Promise<void> {
   console.log(`DB: ${c.jobs} jobs (${pruned} pruned). By source: ${JSON.stringify(c.bySource)}`);
 }
 
-/** CLASSIFY: language pre-check (free REJECT) then LLM for the rest. Needs API key. */
-export async function runClassify(force = false): Promise<void> {
-  const todo: JobWithMeta[] = force ? allJobs() : unclassifiedJobs();
-  console.log(`Classifying ${todo.length} jobs${force ? " (force: all)" : ""}...`);
+/** CLASSIFY: language pre-check (free REJECT) then LLM for the rest. Needs API key.
+ *  `force` re-classifies already-classified jobs; `source` restricts to one board. */
+export async function runClassify({ force = false, source }: { force?: boolean; source?: string } = {}): Promise<void> {
+  const todo: JobWithMeta[] = force ? allJobs(source) : unclassifiedJobs(source);
+  const scope = [force ? "force: all" : null, source ? `source: ${source}` : null].filter(Boolean).join(", ");
+  console.log(`Classifying ${todo.length} jobs${scope ? ` (${scope})` : ""}...`);
 
   const needLLM: JobWithMeta[] = [];
   let langRejected = 0;

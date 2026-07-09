@@ -105,6 +105,34 @@ What You Get: Remote-first culture. Work from anywhere. Competitive salary. Perf
     }),
   },
   {
+    name: "Himalayas worldwide (structured field)",
+    expected: "PASS",
+    note: "JD body is silent on location, but Himalayas' structured fields say worldwide + hiring timezones include UTC+7 — a positive signal that should drive a PASS.",
+    job: job({
+      title: "Senior Product Owner",
+      company: "Verisma",
+      structuredLocation: "Open to all countries (worldwide) — Himalayas structured field",
+      structuredTimezone: "Hiring timezones include UTC+7 (Bangkok); range spans the globe",
+      descriptionText: `Verisma is a leader in release-of-information technology for the healthcare industry. We are hiring a Senior Product Owner to own the roadmap for our core platform.
+
+You will work with engineering and design to define requirements, prioritize the backlog, and deliver features that meet customer needs. Strong stakeholder-management and analytical skills required. 5+ years of product experience preferred.`,
+    }),
+  },
+  {
+    name: "Structured US, but JD says worldwide",
+    expected: "PASS",
+    note: "Structured location says 'United States' and hiring timezones exclude UTC+7, but the JD body explicitly says fully remote / work from anywhere — the body overrides; the restrictive structured field must NOT cause a reject.",
+    job: job({
+      title: "Product Manager",
+      company: "Globex Remote",
+      structuredLocation: "United States",
+      structuredTimezone: "Hiring timezones (UTC -8, -7, -6, -5) do NOT include UTC+7 (Bangkok)",
+      descriptionText: `We're a fully distributed company hiring a Product Manager. This is a fully remote role and you can work from anywhere in the world — we have no office and hire globally.
+
+You'll own discovery-to-delivery for a key product area, partnering with engineering and design across time zones. We care about outcomes, not where you sit.`,
+    }),
+  },
+  {
     name: "Greek-language posting",
     expected: "REJECT",
     note: "English title but the body is written entirely in Greek — signals a local-language (Greek) audience, so REJECT even with no stated geo restriction.",

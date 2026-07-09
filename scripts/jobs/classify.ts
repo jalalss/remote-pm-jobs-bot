@@ -64,6 +64,11 @@ SOFT / representative signals => MAYBE:
 
 Deliberately IGNORE these as signals (too weak or wrong target): "national holidays" (every country has them) and "federal/state law" (that is EEO boilerplate reflecting where the COMPANY is incorporated, not where the ROLE can be done — a US-incorporated company can still hire globally).
 
+## Structured board signals (asymmetric — read carefully)
+Some postings include STRUCTURED fields from the job board (a location-restriction value and/or a hiring-timezone list) that may not appear in the description body. They are given at the top of the user message. Use them ASYMMETRICALLY:
+- POSITIVE signals that SUPPORT a PASS: a structured location that says "open to all countries / worldwide", OR a hiring-timezone field that INCLUDES UTC+7 (Bangkok). Either indicates the employer's own system treats the role as open to Thailand — a genuine work-from-anywhere / timezone-overlap signal that satisfies requirement 2. This can move a posting that is otherwise silent on location from MAYBE to PASS. (Requirement 1 still applies: the role must be truly remote — if the description shows a required office / hybrid / on-site, it is still REJECT.)
+- These board fields are OFTEN INACCURATE in the RESTRICTIVE direction (they name a single country when the description actually says worldwide). So NEVER REJECT a job solely because the structured location names specific countries, or because the hiring-timezone field excludes UTC+7. At most that leaves it at MAYBE. The description body ALWAYS overrides the structured fields when they conflict.
+
 ## Ignore market/footprint language entirely
 Phrases like "customers worldwide", "across the globe", "operating in 37 countries", "1200+ colleagues in 75+ countries", "worldwide leader" describe the BUSINESS, not your eligibility. Never treat them as work-from-anywhere signals. The governing line is always the explicit "based in / located in / available to candidates in / home based in X region" statement — it overrides all marketing language.
 
@@ -72,6 +77,7 @@ When genuinely ambiguous, prefer MAYBE over REJECT. A false MAYBE costs one recr
 
 ## Evidence (required for auditing)
 - \`evidence\` MUST be an exact, unaltered substring copied verbatim from the job description — the specific line/phrase that drove the verdict. For REJECT: the hard-lock phrase. For MAYBE: the ambiguous or missing-location line. For PASS: the work-from-anywhere/timezone phrase. Use null only if truly nothing relevant exists.
+- For PASS, PREFER an explicit affirmative phrase when one exists — "work from anywhere", "fully remote", "remote-first", "employees working across time zones and locations", a wide-open timezone range — over a generic "no location restriction was stated". Only fall back to noting the absence of a restriction when the description contains no such affirmative phrase. (If the PASS rests on a structured board field rather than the body, say so in the reason and set evidence to the best-available body phrase or null.)
 - \`reason\` is one plain sentence.
 - For MAYBE, \`recruiterQuestion\` suggests a short question, typically about whether they can employ in Thailand (e.g. via an Employer of Record) or whether the location list is a hard requirement.`;
 
@@ -95,10 +101,11 @@ const MAX_DESC_CHARS = 8000;
 
 export async function classifyJob(job: RawJob): Promise<Classification> {
   const structuredHints = [
-    job.structuredLocation
-      ? `Job-board location value (a hint — a bare place name here is NOT by itself a hard lock; apply the binding test): "${job.structuredLocation}"`
+    job.structuredLocation || job.structuredTimezone
+      ? "Structured board fields (see the asymmetry rule — may support PASS, must NEVER be the sole basis for REJECT):"
       : null,
-    job.structuredTimezone ? `Structured timezone field: "${job.structuredTimezone}"` : null,
+    job.structuredLocation ? `- Location field: "${job.structuredLocation}"` : null,
+    job.structuredTimezone ? `- Timezone field: "${job.structuredTimezone}"` : null,
   ]
     .filter(Boolean)
     .join("\n");

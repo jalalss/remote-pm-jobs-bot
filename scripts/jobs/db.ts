@@ -20,7 +20,7 @@ function db(): Database.Database {
       id TEXT PRIMARY KEY,
       source TEXT NOT NULL,
       external_id TEXT,
-      title TEXT, company TEXT, url TEXT, description TEXT, location TEXT,
+      title TEXT, company TEXT, url TEXT, description TEXT, location TEXT, timezone TEXT,
       post_date TEXT,
       first_seen_at TEXT NOT NULL,
       last_fetched_at TEXT NOT NULL
@@ -36,6 +36,11 @@ function db(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_class_verdict ON classifications(verdict);
     CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
   `);
+  // Backward-compatible migration: add `timezone` to pre-existing jobs tables.
+  const cols = _db.prepare(`PRAGMA table_info(jobs)`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === "timezone")) {
+    _db.exec(`ALTER TABLE jobs ADD COLUMN timezone TEXT`);
+  }
   return _db;
 }
 
@@ -44,7 +49,8 @@ function db(): Database.Database {
 interface JobRow {
   id: string; source: string; external_id: string | null;
   title: string | null; company: string | null; url: string | null;
-  description: string | null; location: string | null; post_date: string | null;
+  description: string | null; location: string | null; timezone: string | null;
+  post_date: string | null;
   first_seen_at: string; last_fetched_at: string;
 }
 interface ClassRow {
@@ -63,6 +69,7 @@ function rowToJob(r: JobRow): JobWithMeta {
     url: r.url ?? "",
     descriptionText: r.description ?? "",
     structuredLocation: r.location ?? undefined,
+    structuredTimezone: r.timezone ?? undefined,
     postedAt: r.post_date ?? undefined,
     firstSeenAt: r.first_seen_at,
   };
@@ -90,13 +97,13 @@ const externalId = (id: string) => id.slice(id.indexOf(":") + 1);
 export function upsertJobs(jobs: (RawJob & { firstSeenAt?: string })[]): void {
   const now = new Date().toISOString();
   const stmt = db().prepare(`
-    INSERT INTO jobs (id, source, external_id, title, company, url, description, location, post_date, first_seen_at, last_fetched_at)
-    VALUES (@id, @source, @external_id, @title, @company, @url, @description, @location, @post_date, @first_seen_at, @last_fetched_at)
+    INSERT INTO jobs (id, source, external_id, title, company, url, description, location, timezone, post_date, first_seen_at, last_fetched_at)
+    VALUES (@id, @source, @external_id, @title, @company, @url, @description, @location, @timezone, @post_date, @first_seen_at, @last_fetched_at)
     ON CONFLICT(id) DO UPDATE SET
       title = excluded.title, company = excluded.company, url = excluded.url,
       description = CASE WHEN excluded.description IS NOT NULL AND excluded.description != ''
                         THEN excluded.description ELSE jobs.description END,
-      location = excluded.location, post_date = excluded.post_date,
+      location = excluded.location, timezone = excluded.timezone, post_date = excluded.post_date,
       last_fetched_at = excluded.last_fetched_at
   `);
   const tx = db().transaction((rows: (RawJob & { firstSeenAt?: string })[]) => {
@@ -110,6 +117,7 @@ export function upsertJobs(jobs: (RawJob & { firstSeenAt?: string })[]): void {
         url: j.url ?? null,
         description: j.descriptionText ?? null,
         location: j.structuredLocation ?? null,
+        timezone: j.structuredTimezone ?? null,
         post_date: j.postedAt ?? null,
         first_seen_at: j.firstSeenAt ?? now,
         last_fetched_at: now,
@@ -131,14 +139,15 @@ export function pruneJobsOlderThan(days: number): number {
   return info.changes;
 }
 
-export function allJobs(): JobWithMeta[] {
-  return (db().prepare(`SELECT * FROM jobs`).all() as JobRow[]).map(rowToJob);
+export function allJobs(source?: string): JobWithMeta[] {
+  const sql = source ? `SELECT * FROM jobs WHERE source = ?` : `SELECT * FROM jobs`;
+  return (db().prepare(sql).all(...(source ? [source] : [])) as JobRow[]).map(rowToJob);
 }
 
-export function unclassifiedJobs(): JobWithMeta[] {
-  const rows = db()
-    .prepare(`SELECT j.* FROM jobs j LEFT JOIN classifications c ON c.job_id = j.id WHERE c.job_id IS NULL`)
-    .all() as JobRow[];
+export function unclassifiedJobs(source?: string): JobWithMeta[] {
+  const sql = `SELECT j.* FROM jobs j LEFT JOIN classifications c ON c.job_id = j.id
+               WHERE c.job_id IS NULL${source ? " AND j.source = ?" : ""}`;
+  const rows = db().prepare(sql).all(...(source ? [source] : [])) as JobRow[];
   return rows.map(rowToJob);
 }
 
