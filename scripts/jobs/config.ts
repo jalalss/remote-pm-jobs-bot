@@ -107,10 +107,29 @@ export const config = {
    * Canada 101174742 · India 102713980. f_WT: 2=Remote. f_TPR: r604800=past 7 days.
    */
   linkedinSearches: [
+    // --- HIGH-PRECISION PASSES. Keep these FIRST: `union` and `linkedinMaxJobs` are shared across
+    // every search, so if the cap ever binds it starves whatever comes last. Lose recall, not core.
     { keywords: '"product manager"', geoId: "91000000", f_WT: "2", f_TPR: "r604800" },  // EU · Remote · 7d
     { keywords: '"product manager"', geoId: "103644278", f_WT: "2", f_TPR: "r604800" }, // US · Remote · 7d
     { keywords: '"product manager"', geoId: "101165590", f_WT: "2", f_TPR: "r604800" }, // UK · Remote · 7d
     { keywords: '"product manager"', geoId: "91000003", f_WT: "2", f_TPR: "r604800" },  // APAC · Remote · 7d
+
+    // --- RECALL PASSES. The guest `f_WT=2` facet is LOSSY: it drops genuinely-remote roles.
+    // Verified against LinkedIn job 4435555996 ("Senior PM, HRIS Integrations" @ Remote, EMEA),
+    // which the real UI tags Remote: `geoId=92000000` with no f_WT returns it; the same query
+    // WITH f_WT=2 does not. The guest job fragment exposes no workplace-type field, so we cannot
+    // audit the facet — only filter on it, badly.
+    //
+    // These are ADDITIVE (searches are unioned), never a replacement. Measured on the US geo:
+    // swapping `f_WT=2` for the keyword loses 79 of 118 jobs, because every guest query caps near
+    // ~120 results and dropping a filter changes WHICH 120 you get, not how many. The jobs these
+    // passes add PASS at ~the same rate as the f_WT ones; our classifier makes the remote call.
+    { keywords: '"product manager" remote', geoId: "92000000", f_TPR: "r604800" },  // Worldwide · any WT · 7d
+    { keywords: '"product manager"', geoId: "92000000", f_WT: "2", f_TPR: "r604800" }, // Worldwide · Remote · 7d
+    { keywords: '"product manager" remote', geoId: "103644278", f_TPR: "r604800" }, // US · any WT · 7d
+    { keywords: '"product manager" remote', geoId: "91000000", f_TPR: "r604800" },  // EU · any WT · 7d
+    { keywords: '"product manager" remote', geoId: "101165590", f_TPR: "r604800" }, // UK · any WT · 7d
+    { keywords: '"product manager" remote', geoId: "91000003", f_TPR: "r604800" },  // APAC · any WT · 7d
   ] as { keywords: string; geoId: string; f_WT?: string; f_TPR?: string }[],
   /** Repeat each search up to this many times (union), stopping early once it plateaus. */
   linkedinRepeats: 10,
@@ -118,10 +137,14 @@ export const config = {
   linkedinPlateauStreak: 3,
   /** Max result pages per single search iteration (each page ~10 cards). */
   linkedinMaxPagesPerQuery: 8,
-  /** Hard ceiling on unique LinkedIn jobs per run (keeps JD fetches + cost bounded). */
-  linkedinMaxJobs: 1000,
-  /** Polite delay (ms) between LinkedIn requests. */
-  linkedinRequestDelayMs: 500,
+  /**
+   * Hard ceiling on unique LinkedIn jobs per run (keeps JD fetches + cost bounded).
+   * SHARED across every entry in `linkedinSearches` — once it binds, the remaining searches are
+   * skipped entirely. Raised from 1000 when the recall passes took the list from 4 to 10 searches.
+   */
+  linkedinMaxJobs: 2500,
+  /** Polite delay (ms) between LinkedIn requests. 10 searches => more requests => more 429 risk. */
+  linkedinRequestDelayMs: 800,
   /** Browser-like UA — LinkedIn 999-blocks obvious bot UAs. */
   linkedinUserAgent:
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

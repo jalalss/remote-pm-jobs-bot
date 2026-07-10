@@ -28,23 +28,55 @@ const REGION_NAMES: Record<string, string> = {
   "103644278": "US",
   "101165590": "UK",
   "91000003": "APAC",
+  "92000000": "WW",
 };
 const regionName = (geoId: string) => REGION_NAMES[geoId] ?? `geo:${geoId}`;
 
-async function fetchHtml(url: string): Promise<{ ok: boolean; html: string }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20_000);
-  try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": config.linkedinUserAgent, Accept: "text/html" },
-      signal: controller.signal,
-    });
-    return { ok: res.ok, html: res.ok ? await res.text() : "" };
-  } catch {
-    return { ok: false, html: "" };
-  } finally {
-    clearTimeout(timer);
+/** LinkedIn throttled us. Callers must NOT mistake this for an exhausted result set. */
+export class RateLimited extends Error {
+  constructor(readonly status: number) {
+    super(`LinkedIn rate-limited the request (HTTP ${status || "network error"})`);
+    this.name = "RateLimited";
   }
+}
+
+/**
+ * Fetch one guest page, retrying throttles with backoff.
+ *
+ * The caller breaks its pagination loop on `!ok`, so a 429 returned as `{ok:false}` would look
+ * exactly like "no more results": the run would quietly return fewer jobs and still report success.
+ * Retry, then THROW — a rate-limit must never be silently absorbed.
+ */
+async function fetchHtml(url: string): Promise<{ ok: boolean; html: string; status: number }> {
+  const RETRY_ON = [429, 500, 502, 503, 504, 999]; // 999 = LinkedIn's bot-block status
+  let lastStatus = 0;
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": config.linkedinUserAgent, Accept: "text/html" },
+        signal: controller.signal,
+      });
+      lastStatus = res.status;
+      if (res.ok) return { ok: true, html: await res.text(), status: res.status };
+      // A genuine 404/400 is not a throttle; let the caller stop this search normally.
+      if (!RETRY_ON.includes(res.status)) return { ok: false, html: "", status: res.status };
+    } catch {
+      lastStatus = 0; // network error or timeout — worth retrying
+    } finally {
+      clearTimeout(timer);
+    }
+    if (attempt < 3) {
+      const backoff = 2000 * 2 ** attempt; // 2s, 4s, 8s
+      console.warn(
+        `    linkedin: HTTP ${lastStatus || "network error"} — backing off ${backoff / 1000}s (retry ${attempt + 1}/3)`,
+      );
+      await sleep(backoff);
+    }
+  }
+  throw new RateLimited(lastStatus);
 }
 
 // The guest jobPosting fragment wraps the JD in login-wall chrome; the actual description
@@ -83,12 +115,21 @@ function parseCards(html: string): Card[] {
   return out;
 }
 
-/** Repeat one search, unioning cards until it plateaus (LinkedIn is non-deterministic). */
+/**
+ * Repeat one search, unioning cards until it plateaus (LinkedIn is non-deterministic).
+ *
+ * Returns how many cards THIS search contributed that no earlier search had. `union` is shared
+ * across every configured search, so cumulative size can't show whether a given search earned its
+ * rate-limit budget — only the delta can.
+ */
 async function collectSearch(
   s: { keywords: string; geoId: string; f_WT?: string; f_TPR?: string },
   union: Map<string, Card>,
-): Promise<void> {
-  const label = regionName(s.geoId);
+): Promise<number> {
+  // Two searches can share a geo and differ only in facet + keywords (the WW pair), so the label
+  // has to carry both or the yield logs are unreadable a month from now.
+  const label = `${regionName(s.geoId)} ${s.f_WT ? "f_WT=2" : "anyWT"} kw='${s.keywords}'`;
+  const contributed = union.size;
   const query = [
     `keywords=${encodeURIComponent(s.keywords)}`,
     `geoId=${encodeURIComponent(s.geoId)}`,
@@ -104,20 +145,22 @@ async function collectSearch(
     const before = union.size;
     let start = 0;
     for (let page = 0; page < config.linkedinMaxPagesPerQuery; page++) {
-      if (union.size >= config.linkedinMaxJobs) return;
+      if (union.size >= config.linkedinMaxJobs) return union.size - contributed;
       const { ok, html } = await fetchHtml(`${SEARCH}?${query}&start=${start}`);
-      if (!ok) break;
+      if (!ok) break; // a real 4xx; throttles throw RateLimited instead of landing here
       const cards = parseCards(html);
       if (cards.length === 0) break;
       for (const c of cards) if (!union.has(c.id)) union.set(c.id, c);
       start += cards.length;
       await sleep(config.linkedinRequestDelayMs);
     }
-    console.log(`    linkedin[${label}]: pass ${rep + 1} -> ${union.size} unique cards`);
     plateauStreak = union.size === before ? plateauStreak + 1 : 0;
     if (plateauStreak >= config.linkedinPlateauStreak) break;
     if (union.size >= config.linkedinMaxJobs) break;
   }
+  const gained = union.size - contributed;
+  console.log(`    linkedin[${label}]: +${gained} new cards (union now ${union.size})`);
+  return gained;
 }
 
 /**
@@ -126,11 +169,28 @@ async function collectSearch(
  */
 export async function fetchLinkedin(knownIds: Set<string>): Promise<RawJob[]> {
   const union = new Map<string, Card>();
+  let throttled = false;
+
   for (const s of config.linkedinSearches) {
-    await collectSearch(s, union);
-    if (union.size >= config.linkedinMaxJobs) break;
+    try {
+      await collectSearch(s, union);
+    } catch (e) {
+      if (!(e instanceof RateLimited)) throw e;
+      // Stop searching rather than hammer a throttling host. Keep what we have; the JD loop
+      // below will decide for itself whether LinkedIn is answering again.
+      console.warn(`\n  !! LINKEDIN RATE-LIMITED (${e.message}).`);
+      console.warn(`  !! Stopped after ${union.size} cards; remaining searches skipped.`);
+      console.warn(`  !! Change your IP (VPN) and re-run \`npm run jobs:fetch\` to collect the rest.\n`);
+      throttled = true;
+      break;
+    }
+    if (union.size >= config.linkedinMaxJobs) {
+      console.warn(`    linkedin: hit linkedinMaxJobs (${config.linkedinMaxJobs}); later searches skipped.`);
+      break;
+    }
   }
   if (union.size === 0) throw new Error("no cards returned (blocked or empty search)");
+  if (throttled) console.warn(`    linkedin: proceeding with a PARTIAL card set (${union.size}).`);
 
   // Role-gate on title BEFORE fetching JDs, and cap, so we only spend fetches on PM roles.
   const pmCards = [...union.values()]
@@ -159,13 +219,25 @@ export async function fetchLinkedin(knownIds: Set<string>): Promise<RawJob[]> {
       jobs.push({ ...base, descriptionText: "" });
       continue;
     }
-    const { ok, html } = await fetchHtml(`${JOB}/${card.id}`);
+    let ok: boolean;
+    let html: string;
+    try {
+      ({ ok, html } = await fetchHtml(`${JOB}/${card.id}`));
+    } catch (e) {
+      if (!(e instanceof RateLimited)) throw e;
+      // Without this, a throttle would look like "this posting expired" for every remaining card,
+      // and the run would report success having silently dropped hundreds of JDs.
+      console.warn(`\n  !! LINKEDIN RATE-LIMITED while fetching JDs (${e.message}).`);
+      console.warn(`  !! Keeping the ${jobs.length} JDs fetched so far; ${pmCards.length - fetched} not fetched.`);
+      console.warn(`  !! Change your IP (VPN) and re-run \`npm run jobs:fetch\` — cached jobs are skipped.\n`);
+      break;
+    }
     await sleep(config.linkedinRequestDelayMs);
     fetched++;
     if (fetched % 25 === 0 || fetched === newCount) {
       console.log(`    linkedin: fetched ${fetched}/${newCount} JDs`);
     }
-    if (!ok || !html) continue; // expired / gated / blocked — skip this one
+    if (!ok || !html) continue; // expired / gated — skip this one
     jobs.push({ ...base, descriptionText: extractDescription(html) });
   }
   return jobs;

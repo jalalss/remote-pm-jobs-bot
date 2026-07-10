@@ -226,12 +226,14 @@ lists should understand exactly how you arrived at it. They are not application 
 let client: Anthropic | null = null;
 const getClient = () => (client ??= new Anthropic());
 
-// Transient errors worth retrying: overload / rate limit / 5xx / grammar-compile timeouts.
+// Transient errors worth retrying: overload / rate limit / 5xx / grammar-compile timeouts, plus a
+// truncated structured-output response. The last one looks permanent but isn't: a job whose JSON
+// came back cut short ("Unexpected end of JSON input") scored fine on a plain retry.
 function isRetryable(e: unknown): boolean {
   const status = (e as { status?: number })?.status;
   const message = (e as { message?: string })?.message ?? "";
   if (status && [408, 409, 429, 500, 502, 503, 504, 529].includes(status)) return true;
-  return /grammar compilation|overloaded|timed? ?out|rate.?limit/i.test(message);
+  return /grammar compilation|overloaded|timed? ?out|rate.?limit|parse structured output/i.test(message);
 }
 
 const MAX_DESC_CHARS = 12_000;
