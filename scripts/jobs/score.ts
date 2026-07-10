@@ -21,8 +21,14 @@ export const FitSchema = z.object({
   score: z.number().min(0).max(10).describe("Role fit, 0.0–10.0. One decimal place."),
   strengths: z
     .array(z.string())
-    .describe("2–3 things to lead with in the application. CV-defensible wording only."),
-  gaps: z.array(z.string()).describe("2–3 gaps or objections to expect for this specific role."),
+    .describe(
+      "2–3 concrete reasons this role scores as high as it does. Evidence-backed, CV-defensible wording.",
+    ),
+  gaps: z
+    .array(z.string())
+    .describe(
+      "1–3 things that actually pulled the score DOWN. Never unknowns or things to verify. May be empty.",
+    ),
   angle: z
     .string()
     .describe("One line on how to pitch himself for THIS role. Must be usable verbatim in a cover letter."),
@@ -193,12 +199,27 @@ Remote eligibility and right-to-work were already decided by an upstream classif
 passed it. Re-judging them here would double-penalize. Say nothing about visas or relocation.
 
 ## Output rules
-- \`strengths\` and \`angle\` must be **defensible from the CV alone** (or cite a Tier-2 link), because they
-  are lifted straight into a cover letter. Never assert people-management he has not done. Never state a
-  years-of-experience number the CV does not support.
-- \`gaps\` are for HIM, so be blunt and specific to this posting ("they want 3+ yrs managing PMs; you have
-  none", "fintech domain is new to you"). Not generic filler.
-- \`angle\` is one sentence he could paste into a cover letter opener.
+
+\`strengths\` and \`gaps\` together must EXPLAIN THE NUMBER. A reader who sees only the score and these two
+lists should understand exactly how you arrived at it. They are not application advice.
+
+- \`strengths\` — the 2–3 concrete things that make the score as HIGH as it is. Cite the specific evidence
+  (a company, a result, a shipped surface), not a trait. They must be **defensible from the CV alone** (or
+  cite a Tier-2 link), because they are also lifted into a cover letter. Never assert people-management he
+  has not done. Never state a years-of-experience number the CV does not support.
+- \`gaps\` — ONLY things that actually pulled the score DOWN, blunt and specific to this posting ("they
+  want 3+ yrs managing PMs; you have none"). Say how much each one cost, briefly: "hard requirement he
+  lacks — caps this near 4", "a plus, not a requirement — mild".
+  **A factor that did not move the score is NOT a gap.** Do not list unknowns ("no compensation stated"),
+  things to verify ("confirm the strategy scope"), or generic risks. If it did not cost points, either put
+  it in \`reason\` or leave it out. An excellent role may have one gap or none — list only what you actually
+  deducted for, however few that is.
+
+  **Decide the score FIRST, then report the gaps that produced it.** These two fields describe a judgement
+  you have already made; they must never revise it. Do not adjust the score to make the gap list look
+  balanced, and do not add or drop a gap because of how many there are.
+- \`angle\` is one sentence he could paste into a cover letter opener. It is stored for later drafting and
+  is not shown next to the score, so it may repeat a strength.
 - \`reason\` is one sentence explaining the number.`;
 }
 

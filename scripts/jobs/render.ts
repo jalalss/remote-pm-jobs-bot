@@ -91,15 +91,15 @@ function card(job: ClassifiedJob, review: boolean): string {
   // Role fit: "is this worth applying to?" — distinct from the verdict's "can I take it?".
   const f = job.fit;
   const scoreChip = f
-    ? `<span class="score ${scoreBand(f.score)}" title="Role fit (0–10)">${f.score.toFixed(1)}</span>`
+    ? `<span class="score ${scoreBand(f.score)}" title="Role fit (0–10)">${f.score.toFixed(1)}<span class="of-ten">/10</span></span>`
     : "";
   const li = (xs: string[]) => xs.map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+  // `f.angle` is deliberately not rendered: it is cover-letter raw material, not score rationale.
   const fitBlock = f
     ? `<div class="fit">
          <p class="fit-reason">${escapeHtml(f.reason)}</p>
-         ${f.strengths.length ? `<div class="fit-col"><h4>Lead with</h4><ul class="good">${li(f.strengths)}</ul></div>` : ""}
-         ${f.gaps.length ? `<div class="fit-col"><h4>Expect</h4><ul class="bad">${li(f.gaps)}</ul></div>` : ""}
-         ${f.angle ? `<p class="angle"><strong>Angle:</strong> ${escapeHtml(f.angle)}</p>` : ""}
+         ${f.strengths.length ? `<div class="fit-col"><h4>Strengths</h4><ul class="good">${li(f.strengths)}</ul></div>` : ""}
+         ${f.gaps.length ? `<div class="fit-col"><h4>Gaps</h4><ul class="bad">${li(f.gaps)}</ul></div>` : ""}
        </div>`
     : "";
 
@@ -110,7 +110,7 @@ function card(job: ClassifiedJob, review: boolean): string {
       <span class="badge ${v}">${v}</span>
       ${editedBadge}
       ${newBadge}
-      <h3>${escapeHtml(job.title)}</h3>
+      <h3><a href="${escapeHtml(job.url)}" target="_blank" rel="noopener">${escapeHtml(job.title)}</a></h3>
       ${editBtn}
     </div>
     <div class="sub">
@@ -126,7 +126,6 @@ function card(job: ClassifiedJob, review: boolean): string {
     ${evidence}
     ${tz}
     ${recruiter}
-    <p><a href="${escapeHtml(job.url)}" target="_blank" rel="noopener">Open posting →</a></p>
   </article>`;
 }
 
@@ -358,8 +357,12 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   .card.REJECT { border-left-color: #cf222e; }
   .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .head h3 { font-size: 16px; margin: 0; }
+  /* The title is the link to the posting; keep it looking like a title until hovered. */
+  .head h3 a { color: inherit; text-decoration: none; }
+  .head h3 a:hover, .head h3 a:focus-visible { text-decoration: underline; }
   /* Role-fit score chip */
   .score { font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 6px; color: #fff; min-width: 34px; text-align: center; }
+  .of-ten { font-size: 10px; font-weight: 600; opacity: .75; margin-left: 1px; }
   .score.hi  { background: #1a7f37; }
   .score.mid { background: #bf8700; }
   .score.lo  { background: #6e7781; }
@@ -372,7 +375,6 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   .fit ul.good li { color: #1a7f37; }
   .fit ul.bad li { color: #9a3412; }
   .fit ul li span, .fit ul li { color: inherit; }
-  .angle { margin: 10px 0 0; font-size: 13px; background: #eaf3ff; padding: 8px 10px; border-radius: 5px; color: #1a1a1a; }
   /* Edit button pinned to the card's top-right. */
   .edit { margin-left: auto; cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 8px;
           border: 1px solid #d0d7de; border-radius: 6px; background: transparent; color: #57606a; }
@@ -438,7 +440,6 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
     .fit-reason { color: #c9d1d9; }
     .fit ul.good li { color: #3fb950; }
     .fit ul.bad li { color: #f0883e; }
-    .angle { background: #0d2b52; color: #e6edf3; }
     .edit { border-color: #444c56; color: #8b949e; }
     .edit:hover { background: #21262d; color: #e6edf3; }
     .override .why { color: #c9d1d9; }
