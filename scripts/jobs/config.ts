@@ -114,8 +114,30 @@ export const config = {
   linkedinUserAgent:
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 
+  /**
+   * Rubric rules a human can tag when overriding a verdict during QA. One source of truth,
+   * shared by the review modal's <select> and the review server's validation. Tagging which
+   * rule misfired makes it easy to see what to fix next (and labels the future training set).
+   */
+  ruleTags: [
+    "breadth",
+    "scoped-away",
+    "async-global-hiring",
+    "binding-lock",
+    "work-auth",
+    "timezone-overlap",
+    "office-onsite",
+    "non-english",
+    "structured-field",
+    "other",
+  ],
+  /** Port for the local review server (`npm run jobs:review`). */
+  reviewPort: 4321,
+
   /** Output digest path (relative to repo root). */
   outputPath: "jobs-digest.html",
+  /** Where `jobs:labels` writes the human-vs-LLM dataset (gitignored). */
+  labelsExportPath: ".jobs-labels.jsonl",
   /** SQLite database path (jobs + classifications tables), gitignored. */
   dbPath: ".jobs.db",
   /** Legacy JSON paths — only read by `jobs:migrate` to import into the DB. */

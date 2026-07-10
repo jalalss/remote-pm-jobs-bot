@@ -11,6 +11,8 @@
     "jobs:fetch": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts fetch",
     "jobs:classify": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts classify",
     "jobs:render": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts render",
+    "jobs:review": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts review",
+    "jobs:labels": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts labels",
     "jobs:langcheck": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts langcheck",
     "jobs:reject": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts reject",
     "jobs:migrate": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts migrate",

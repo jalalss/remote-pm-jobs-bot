@@ -3,9 +3,12 @@
 //   fetch          pull sources -> .jobs-raw.json           (no API key)
 //   classify       score jobs in the DB                     (needs API key; --force reclassifies all, --source <name> limits to one board)
 //   render         stores -> jobs-digest.html               (no API key, no network)
+//   review         serve the digest with edit controls      (localhost only; writes job_overrides)
+//   labels         export human overrides -> JSONL          (the human-vs-LLM dataset)
 //   langcheck      free sweep: non-English PASS/MAYBE -> REJECT   (no API key)
 //   reject <ids…>  force-REJECT specific jobs                (no API key)
-import { runFetch, runClassify, runRender, runLangSweep, runReject, runMigrate } from "./pipeline.js";
+import { runFetch, runClassify, runRender, runLangSweep, runReject, runMigrate, runLabelsExport } from "./pipeline.js";
+import { runReview } from "./review-server.js";
 
 function requireApiKey() {
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -36,6 +39,14 @@ async function main() {
     case "reject":
       runReject(args.filter((a) => !a.startsWith("--")));
       break;
+    case "review": {
+      const portIdx = args.indexOf("--port");
+      runReview(portIdx >= 0 ? Number(args[portIdx + 1]) : undefined);
+      break;
+    }
+    case "labels":
+      runLabelsExport();
+      break;
     case "migrate":
       runMigrate();
       break;
@@ -46,7 +57,7 @@ async function main() {
       runRender();
       break;
     default:
-      console.error(`Unknown command "${cmd}". Use: all | fetch | classify [--force] [--source <name>] | render | langcheck | reject <ids...> | migrate`);
+      console.error(`Unknown command "${cmd}". Use: all | fetch | classify [--force] [--source <name>] | render | review [--port N] | labels | langcheck | reject <ids...> | migrate`);
       process.exit(1);
   }
 }

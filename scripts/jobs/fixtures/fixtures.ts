@@ -80,7 +80,12 @@ Workplace Benefits: Highly competitive compensation package. Generous PTO and va
   {
     name: "OneOcean",
     expected: "MAYBE",
-    note: "Faithful to the real posting: the BODY says nothing about work location; 'Singapore' appears ONLY in the structured board field. A single APAC bare label with a silent body → ambiguous, worth the EOR question. (Singapore is +8, adjacent to +7, so NOT scoped away.)",
+    // KNOWN FLAKY (accepted). This case sits exactly on the MAYBE/REJECT boundary: a lone
+    // structured "Singapore" label with a body silent on work model. `temperature: 0` reduces
+    // variance but does not guarantee determinism, so this fixture occasionally comes back
+    // REJECT (the model infers "office-based in a single location"). Don't chase it — a real
+    // borderline job is what the manual override in `jobs:review` exists for.
+    note: "Faithful to the real posting: the BODY says nothing about work location; 'Singapore' appears ONLY in the structured board field. A single APAC bare label with a silent body → ambiguous, worth the EOR question. (Singapore is +8, adjacent to +7, so NOT scoped away.) NOTE: borderline — flips MAYBE/REJECT between runs even at temp 0.",
     job: job({
       title: "Senior Product Manager - Solutions",
       company: "OneOcean",

@@ -1,8 +1,14 @@
-// SQLite data-access layer (better-sqlite3). Two tables: jobs + classifications (1:1).
-// Replaces the JSON store/cache; each pipeline stage queries only what it needs.
+// SQLite data-access layer (better-sqlite3). Three tables:
+//   jobs             — fetched listings
+//   classifications  — the CLASSIFIER's verdict (rewritten freely by `classify --force`)
+//   job_overrides    — the HUMAN's edits for a job, never touched by classify, so a manual
+//                      verdict survives re-classification AND the LLM's opinion is preserved
+//                      alongside it (that pairing is the rubric-refinement dataset).
+//                      Deliberately a general "user edits" row: a `status` column
+//                      (Viewed/Applied) can be added later via the guarded-ALTER pattern below.
 import Database from "better-sqlite3";
 import { config } from "./config.js";
-import type { Classification, RawJob, Verdict } from "./types.js";
+import type { Classification, JobOverride, RawJob, Verdict } from "./types.js";
 
 export type ClassificationMethod = "llm" | "language" | "manual";
 export interface JobWithMeta extends RawJob {
@@ -33,6 +39,11 @@ function db(): Database.Database {
       method TEXT NOT NULL,
       classified_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS job_overrides (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      verdict TEXT, reason TEXT, rule_tag TEXT,
+      updated_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_class_verdict ON classifications(verdict);
     CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
   `);
@@ -58,6 +69,21 @@ interface ClassRow {
   work_model: string | null; location_restriction: string | null;
   timezone_requirement: string | null; timezone_overlap_ok: number | null;
   recruiter_question: string | null; method: string; classified_at: string;
+}
+/** LEFT JOINed override columns, aliased to avoid colliding with `classifications`. */
+interface OverrideRow {
+  o_verdict: string | null; o_reason: string | null;
+  o_rule_tag: string | null; o_updated_at: string | null;
+}
+
+function rowToOverride(r: OverrideRow): JobOverride | undefined {
+  if (!r.o_updated_at) return undefined; // no override row for this job
+  return {
+    verdict: (r.o_verdict as Verdict | null) ?? null,
+    reason: r.o_reason,
+    ruleTag: r.o_rule_tag,
+    updatedAt: r.o_updated_at,
+  };
 }
 
 function rowToJob(r: JobRow): JobWithMeta {
@@ -181,30 +207,70 @@ export function upsertClassification(jobId: string, c: Classification, method: C
     });
 }
 
-/** Jobs that have a classification, joined. Optionally filtered to specific verdicts. */
-export function classifiedJobs(verdicts?: Verdict[]): { job: JobWithMeta; classification: Classification }[] {
-  const where = verdicts && verdicts.length ? `WHERE c.verdict IN (${verdicts.map(() => "?").join(",")})` : "";
+/** Jobs that have a classification, joined with any human override. The optional
+ *  `verdicts` filter applies to the EFFECTIVE verdict (the human's if set, else the LLM's). */
+export function classifiedJobs(
+  verdicts?: Verdict[],
+): { job: JobWithMeta; classification: Classification; override?: JobOverride }[] {
+  const where = verdicts && verdicts.length
+    ? `WHERE COALESCE(o.verdict, c.verdict) IN (${verdicts.map(() => "?").join(",")})`
+    : "";
   const rows = db()
     .prepare(`SELECT j.*, c.verdict, c.reason, c.evidence, c.work_model, c.location_restriction,
-                     c.timezone_requirement, c.timezone_overlap_ok, c.recruiter_question, c.method, c.classified_at
-              FROM jobs j JOIN classifications c ON c.job_id = j.id ${where}`)
-    .all(...(verdicts ?? [])) as (JobRow & ClassRow)[];
-  return rows.map((r) => ({ job: rowToJob(r), classification: rowToClassification(r) }));
+                     c.timezone_requirement, c.timezone_overlap_ok, c.recruiter_question, c.method, c.classified_at,
+                     o.verdict AS o_verdict, o.reason AS o_reason, o.rule_tag AS o_rule_tag, o.updated_at AS o_updated_at
+              FROM jobs j
+              JOIN classifications c ON c.job_id = j.id
+              LEFT JOIN job_overrides o ON o.job_id = j.id
+              ${where}`)
+    .all(...(verdicts ?? [])) as (JobRow & ClassRow & OverrideRow)[];
+  return rows.map((r) => ({
+    job: rowToJob(r),
+    classification: rowToClassification(r),
+    override: rowToOverride(r),
+  }));
 }
 
-/** Force-REJECT specific jobs (method='manual'). Skips ids with no job row. */
+// ---- human overrides (never written by the classifier) ----
+
+export function jobExists(id: string): boolean {
+  return !!db().prepare(`SELECT 1 FROM jobs WHERE id = ?`).get(id);
+}
+
+/** Upsert the human's edits for a job. */
+export function setOverride(
+  jobId: string,
+  patch: { verdict?: Verdict | null; reason?: string | null; ruleTag?: string | null },
+): void {
+  db()
+    .prepare(`
+      INSERT INTO job_overrides (job_id, verdict, reason, rule_tag, updated_at)
+      VALUES (@job_id, @verdict, @reason, @rule_tag, @updated_at)
+      ON CONFLICT(job_id) DO UPDATE SET
+        verdict = excluded.verdict, reason = excluded.reason,
+        rule_tag = excluded.rule_tag, updated_at = excluded.updated_at
+    `)
+    .run({
+      job_id: jobId,
+      verdict: patch.verdict ?? null,
+      reason: patch.reason ?? null,
+      rule_tag: patch.ruleTag ?? null,
+      updated_at: new Date().toISOString(),
+    });
+}
+
+/** Drop the human's edits, reverting the job to the classifier's verdict. */
+export function clearOverride(jobId: string): boolean {
+  return db().prepare(`DELETE FROM job_overrides WHERE job_id = ?`).run(jobId).changes > 0;
+}
+
+/** Force-REJECT specific jobs as a human override (sticky across `classify --force`). */
 export function forceReject(ids: string[]): { rejected: number; missing: string[] } {
-  const exists = db().prepare(`SELECT 1 FROM jobs WHERE id = ?`);
-  const rejection: Classification = {
-    workModel: "unclear", locationRestriction: "unclear", evidence: null,
-    timezoneRequirement: null, timezoneOverlapOk: null, verdict: "REJECT",
-    reason: "Manually rejected.", recruiterQuestion: null,
-  };
   let rejected = 0;
   const missing: string[] = [];
   for (const id of ids) {
-    if (exists.get(id)) {
-      upsertClassification(id, rejection, "manual");
+    if (jobExists(id)) {
+      setOverride(id, { verdict: "REJECT", reason: "Manually rejected." });
       rejected++;
     } else {
       missing.push(id);
@@ -216,9 +282,12 @@ export function forceReject(ids: string[]): { rejected: number; missing: string[
 export function counts(): { jobs: number; classifications: number; byVerdict: Record<string, number>; bySource: Record<string, number> } {
   const jobs = (db().prepare(`SELECT COUNT(*) n FROM jobs`).get() as { n: number }).n;
   const classifications = (db().prepare(`SELECT COUNT(*) n FROM classifications`).get() as { n: number }).n;
+  // Tally the EFFECTIVE verdict so logs match what the digest shows.
   const byVerdict: Record<string, number> = {};
-  for (const r of db().prepare(`SELECT verdict, COUNT(*) n FROM classifications GROUP BY verdict`).all() as { verdict: string; n: number }[])
-    byVerdict[r.verdict] = r.n;
+  for (const r of db().prepare(`SELECT COALESCE(o.verdict, c.verdict) AS v, COUNT(*) n
+                                FROM classifications c LEFT JOIN job_overrides o ON o.job_id = c.job_id
+                                GROUP BY v`).all() as { v: string; n: number }[])
+    byVerdict[r.v] = r.n;
   const bySource: Record<string, number> = {};
   for (const r of db().prepare(`SELECT source, COUNT(*) n FROM jobs GROUP BY source`).all() as { source: string; n: number }[])
     bySource[r.source] = r.n;

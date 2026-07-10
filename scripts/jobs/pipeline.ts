@@ -3,7 +3,7 @@
 // the SQLite DB (db.ts); each stage queries only what it needs.
 import { writeFileSync } from "node:fs";
 import { config, titleMatchesRole } from "./config.js";
-import type { Classification, ClassifiedJob, RawJob, Verdict } from "./types.js";
+import { effectiveVerdict, type Classification, type ClassifiedJob, type RawJob, type Verdict } from "./types.js";
 import { classifyJob } from "./classify.js";
 import {
   upsertJobs, allJobIds, pruneJobsOlderThan, allJobs, unclassifiedJobs,
@@ -140,19 +140,51 @@ export async function runClassify({ force = false, source }: { force?: boolean; 
   console.log(`DB: ${c.classifications} classifications. By verdict: ${JSON.stringify(c.byVerdict)}`);
 }
 
-/** RENDER: join jobs + classifications -> HTML. No API key, no network. */
+/** RENDER: join jobs + classifications (+ any human override) -> HTML. No API key, no network. */
 export function runRender(): void {
   const cutoff = Date.now() - config.newBadgeHours * 3_600_000;
-  const classified: ClassifiedJob[] = classifiedJobs().map(({ job, classification }) => ({
+  const classified: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override }) => ({
     ...job,
     classification,
+    override,
     isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
   }));
   writeFileSync(config.outputPath, renderDigest(classified), "utf8");
   const tally: Record<Verdict, number> = { PASS: 0, MAYBE: 0, REJECT: 0 };
-  for (const j of classified) tally[j.classification.verdict]++;
-  console.log(`Wrote ${config.outputPath} — ${classified.length} jobs · PASS ${tally.PASS} · MAYBE ${tally.MAYBE} · REJECT ${tally.REJECT}`);
+  for (const j of classified) tally[effectiveVerdict(j)]++;
+  const edited = classified.filter((j) => j.override?.verdict).length;
+  console.log(`Wrote ${config.outputPath} — ${classified.length} jobs · PASS ${tally.PASS} · MAYBE ${tally.MAYBE} · REJECT ${tally.REJECT}${edited ? ` · ${edited} hand-edited` : ""}`);
   console.log(`  Open it: open "${config.outputPath}"`);
+}
+
+/** LABELS: export every human override as JSONL — the human-vs-LLM dataset used to refine
+ *  the rubric (and, later, to train a model). No API key, no network. */
+export function runLabelsExport(): void {
+  const rows = classifiedJobs()
+    .filter((r) => r.override?.verdict)
+    .map(({ job, classification, override }) => ({
+      jobId: job.id,
+      source: job.source,
+      title: job.title,
+      company: job.company,
+      url: job.url,
+      postedAt: job.postedAt ?? null,
+      structuredLocation: job.structuredLocation ?? null,
+      structuredTimezone: job.structuredTimezone ?? null,
+      llmVerdict: classification.verdict,
+      llmReason: classification.reason,
+      llmEvidence: classification.evidence,
+      humanVerdict: override!.verdict,
+      humanReason: override!.reason,
+      ruleTag: override!.ruleTag,
+      labeledAt: override!.updatedAt,
+    }));
+  writeFileSync(config.labelsExportPath, rows.map((r) => JSON.stringify(r)).join("\n") + (rows.length ? "\n" : ""), "utf8");
+  const disagreements = rows.filter((r) => r.humanVerdict !== r.llmVerdict).length;
+  console.log(`Wrote ${config.labelsExportPath} — ${rows.length} labels (${disagreements} disagree with the classifier).`);
+  const byTag: Record<string, number> = {};
+  for (const r of rows) if (r.ruleTag) byTag[r.ruleTag] = (byTag[r.ruleTag] ?? 0) + 1;
+  if (Object.keys(byTag).length) console.log(`  By rule tag: ${JSON.stringify(byTag)}`);
 }
 
 /** LANGCHECK: free sweep — flip non-English PASS/MAYBE jobs to REJECT. No API key. */

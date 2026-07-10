@@ -61,4 +61,5 @@ next-env.d.ts
 .jobs.db
 .jobs.db-shm
 .jobs.db-wal
+.jobs-labels.jsonl
 jobs-digest.html

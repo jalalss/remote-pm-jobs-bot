@@ -1,6 +1,13 @@
 // Renders classified jobs into a single self-contained HTML digest with sticky
 // verdict + source filter chips at the top (inline JS; it's a local file, no CSP).
-import type { ClassifiedJob, Verdict } from "./types.js";
+//
+// Two modes:
+//   static  (`jobs:render`)  — the shareable artifact; read-only.
+//   review  (`jobs:review`)  — served by review-server.ts; each card gets an ✎ button that
+//                              opens a modal to override the verdict and record why.
+// Cards always display the EFFECTIVE verdict (the human's override if set, else the LLM's).
+import { config } from "./config.js";
+import { effectiveVerdict, type ClassifiedJob, type Verdict } from "./types.js";
 
 const SOURCE_LABELS: Record<string, string> = {
   linkedin: "LinkedIn",
@@ -48,8 +55,10 @@ function byPostedDesc(a: ClassifiedJob, b: ClassifiedJob): number {
   return bm - am;
 }
 
-function card(job: ClassifiedJob): string {
+function card(job: ClassifiedJob, review: boolean): string {
   const c = job.classification;
+  const v = effectiveVerdict(job); // human's verdict wins over the classifier's
+  const o = job.override;
   const newBadge = job.isNew ? `<span class="new">NEW</span>` : "";
   const evidence = c.evidence
     ? `<blockquote>${escapeHtml(c.evidence)}</blockquote>`
@@ -66,12 +75,24 @@ function card(job: ClassifiedJob): string {
   const ms = postedMs(job);
   const postedAttr = ms === null ? "" : String(ms);
 
+  // When a human has overridden the verdict, show that fact plus what the classifier said.
+  const overridden = !!o?.verdict && o.verdict !== c.verdict;
+  const editedBadge = o?.verdict ? `<span class="edited">EDITED</span>` : "";
+  const overrideNote = o?.verdict
+    ? `<p class="override">${overridden ? `<span class="llm-said">LLM said: ${c.verdict}</span>` : ""}
+         ${o.reason ? `<span class="why">${escapeHtml(o.reason)}</span>` : ""}
+         ${o.ruleTag ? `<span class="tag">${escapeHtml(o.ruleTag)}</span>` : ""}</p>`
+    : "";
+  const editBtn = review ? `<button class="edit" title="Edit this job" aria-label="Edit this job">✎</button>` : "";
+
   return `
-  <article class="card ${c.verdict}" data-verdict="${c.verdict}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}">
+  <article class="card ${v}" data-job-id="${escapeHtml(job.id)}" data-verdict="${v}" data-llm-verdict="${c.verdict}" data-edited="${o?.verdict ? "1" : ""}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}" data-title="${escapeHtml(job.title)}" data-company="${escapeHtml(job.company)}" data-reason="${escapeHtml(o?.reason ?? "")}" data-rule-tag="${escapeHtml(o?.ruleTag ?? "")}">
     <div class="head">
-      <span class="badge ${c.verdict}">${c.verdict}</span>
+      <span class="badge ${v}">${v}</span>
+      ${editedBadge}
       ${newBadge}
       <h3>${escapeHtml(job.title)}</h3>
+      ${editBtn}
     </div>
     <div class="sub">
       <span>${escapeHtml(job.company)}</span>
@@ -80,6 +101,7 @@ function card(job: ClassifiedJob): string {
       <span class="dot">·</span>
       <span class="posted">${escapeHtml(relativeAge(job.postedAt))}</span>
     </div>
+    ${overrideNote}
     <p class="reason">${escapeHtml(c.reason)}</p>
     ${evidence}
     ${tz}
@@ -88,10 +110,139 @@ function card(job: ClassifiedJob): string {
   </article>`;
 }
 
-export function renderDigest(jobs: ClassifiedJob[]): string {
-  const pass = jobs.filter((j) => j.classification.verdict === "PASS");
-  const maybe = jobs.filter((j) => j.classification.verdict === "MAYBE");
-  const reject = jobs.filter((j) => j.classification.verdict === "REJECT");
+// Review-mode client script. Runs inside the main IIFE, so it reuses `cards`, `apply()` and
+// `recount()`. Edits repaint the card in place rather than reloading, so scroll position and
+// the active filter chips survive. No `${` or backticks in here — it's a template literal.
+const REVIEW_JS = `
+  var modal = document.getElementById('edit-modal');
+  var mTitle = document.getElementById('m-title');
+  var mCompany = document.getElementById('m-company');
+  var mLlm = document.getElementById('m-llm');
+  var mReason = document.getElementById('m-reason');
+  var mTag = document.getElementById('m-tag');
+  var mErr = document.getElementById('m-error');
+  var mRevert = document.getElementById('m-revert');
+  var vBtns = Array.prototype.slice.call(document.querySelectorAll('#m-verdict button'));
+  var current = null, picked = null;
+
+  function pick(v) {
+    picked = v;
+    vBtns.forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.v === v)); });
+  }
+  vBtns.forEach(function (b) { b.addEventListener('click', function () { pick(b.dataset.v); }); });
+
+  function openFor(card) {
+    current = card;
+    mErr.textContent = '';
+    mTitle.textContent = card.dataset.title;
+    mCompany.textContent = card.dataset.company;
+    mLlm.textContent = card.dataset.llmVerdict;
+    mReason.value = card.dataset.reason || '';
+    mTag.value = card.dataset.ruleTag || '';
+    pick(card.dataset.verdict);
+    mRevert.hidden = !card.dataset.edited;
+    modal.showModal();
+  }
+  document.querySelectorAll('.edit').forEach(function (btn) {
+    btn.addEventListener('click', function () { openFor(btn.closest('.card')); });
+  });
+
+  function paint(card, verdict, reason, tag, edited) {
+    card.className = 'card ' + verdict;
+    card.dataset.verdict = verdict;
+    card.dataset.reason = reason || '';
+    card.dataset.ruleTag = tag || '';
+    if (edited) { card.dataset.edited = '1'; } else { delete card.dataset.edited; }
+
+    var badge = card.querySelector('.badge');
+    badge.className = 'badge ' + verdict;
+    badge.textContent = verdict;
+
+    var editedBadge = card.querySelector('.edited');
+    if (edited && !editedBadge) {
+      editedBadge = document.createElement('span');
+      editedBadge.className = 'edited';
+      editedBadge.textContent = 'EDITED';
+      badge.insertAdjacentElement('afterend', editedBadge);
+    } else if (!edited && editedBadge) {
+      editedBadge.remove();
+    }
+
+    var note = card.querySelector('.override');
+    if (!edited) {
+      if (note) note.remove();
+    } else {
+      if (!note) {
+        note = document.createElement('p');
+        note.className = 'override';
+        card.querySelector('.sub').insertAdjacentElement('afterend', note);
+      }
+      note.innerHTML = '';
+      var llm = card.dataset.llmVerdict;
+      if (llm !== verdict) {
+        var s = document.createElement('span');
+        s.className = 'llm-said';
+        s.textContent = 'LLM said: ' + llm;
+        note.appendChild(s);
+      }
+      if (reason) {
+        var w = document.createElement('span');
+        w.className = 'why';
+        w.textContent = reason;
+        note.appendChild(w);
+      }
+      if (tag) {
+        var t = document.createElement('span');
+        t.className = 'tag';
+        t.textContent = tag;
+        note.appendChild(t);
+      }
+    }
+    apply();
+    recount();
+  }
+
+  function post(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok || !j.ok) throw new Error(j.error || 'save failed');
+        return j;
+      });
+    });
+  }
+
+  document.getElementById('m-save').addEventListener('click', function () {
+    if (!current) return;
+    mErr.textContent = '';
+    var body = { jobId: current.dataset.jobId, verdict: picked, reason: mReason.value.trim(), ruleTag: mTag.value };
+    post('/label', body).then(function () {
+      paint(current, picked, body.reason, body.ruleTag, true);
+      modal.close();
+    }).catch(function (e) { mErr.textContent = e.message; });
+  });
+
+  mRevert.addEventListener('click', function () {
+    if (!current) return;
+    mErr.textContent = '';
+    post('/label/clear', { jobId: current.dataset.jobId }).then(function () {
+      paint(current, current.dataset.llmVerdict, '', '', false);
+      modal.close();
+    }).catch(function (e) { mErr.textContent = e.message; });
+  });
+
+  document.getElementById('m-cancel').addEventListener('click', function () { modal.close(); });
+`;
+
+export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } = {}): string {
+  const review = opts.review ?? false;
+  const pass = jobs.filter((j) => effectiveVerdict(j) === "PASS");
+  const maybe = jobs.filter((j) => effectiveVerdict(j) === "MAYBE");
+  const reject = jobs.filter((j) => effectiveVerdict(j) === "REJECT");
+  const edited = jobs.filter((j) => j.override?.verdict).length;
   const now = new Date().toISOString().replace("T", " ").slice(0, 16);
 
   const sourceCounts = new Map<string, number>();
@@ -113,7 +264,42 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
     .join("");
 
   // Flat list: undated first, then newest → oldest.
-  const listCards = [...jobs].sort(byPostedDesc).map(card).join("\n") || `<p class="none">No jobs.</p>`;
+  const listCards =
+    [...jobs].sort(byPostedDesc).map((j) => card(j, review)).join("\n") || `<p class="none">No jobs.</p>`;
+
+  // One shared modal for editing a job's attributes (review mode only). Today it edits the
+  // verdict + reason + rule tag; a Viewed/Applied status control slots in here later.
+  const tagOptions = config.ruleTags.map((t) => `<option value="${t}">${t}</option>`).join("");
+  const modal = review
+    ? `
+<dialog id="edit-modal">
+  <form method="dialog" id="edit-form">
+    <h2 id="m-title">Edit job</h2>
+    <p class="m-sub"><span id="m-company"></span> · <span class="m-llm">LLM said: <b id="m-llm"></b></span></p>
+
+    <label class="m-label">Categorization</label>
+    <div class="segmented" id="m-verdict">
+      <button type="button" data-v="PASS">PASS</button>
+      <button type="button" data-v="MAYBE">MAYBE</button>
+      <button type="button" data-v="REJECT">REJECT</button>
+    </div>
+
+    <label class="m-label" for="m-reason">Why are you changing it?</label>
+    <textarea id="m-reason" rows="3" placeholder="e.g. JD explicitly says they hire worldwide"></textarea>
+
+    <label class="m-label" for="m-tag">Which rule got it wrong? (optional)</label>
+    <select id="m-tag"><option value="">— none —</option>${tagOptions}</select>
+
+    <div class="m-actions">
+      <button type="button" id="m-revert" class="danger">Revert to LLM</button>
+      <span class="m-spacer"></span>
+      <button type="button" id="m-cancel">Cancel</button>
+      <button type="button" id="m-save" class="primary">Save</button>
+    </div>
+    <p class="m-error" id="m-error"></p>
+  </form>
+</dialog>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -151,6 +337,42 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
   .card.REJECT { border-left-color: #cf222e; }
   .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .head h3 { font-size: 16px; margin: 0; }
+  /* Edit button pinned to the card's top-right. */
+  .edit { margin-left: auto; cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 8px;
+          border: 1px solid #d0d7de; border-radius: 6px; background: transparent; color: #57606a; }
+  .edit:hover { background: #f0f2f4; color: #1a1a1a; }
+  .edited { font-size: 10px; font-weight: 700; color: #8250df; border: 1px solid #8250df;
+            border-radius: 4px; padding: 1px 5px; }
+  .override { margin: 6px 0; font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .override .llm-said { color: #999; text-decoration: line-through; }
+  .override .why { color: #333; }
+  .override .tag { font-size: 11px; background: #eee; color: #555; border-radius: 999px; padding: 1px 8px; }
+  /* Edit modal */
+  #edit-modal { border: 1px solid #d0d7de; border-radius: 10px; padding: 0; max-width: 520px; width: 92%;
+                color: #1a1a1a; background: #fff; }
+  #edit-modal::backdrop { background: rgba(0,0,0,.45); }
+  #edit-form { padding: 18px 20px; margin: 0; }
+  #edit-form h2 { font-size: 17px; margin: 0 0 2px; }
+  .m-sub { color: #666; font-size: 13px; margin: 0 0 14px; }
+  .m-label { display: block; font-size: 11px; font-weight: 700; color: #888; text-transform: uppercase;
+             letter-spacing: .04em; margin: 12px 0 6px; }
+  .segmented { display: flex; gap: 6px; }
+  .segmented button { flex: 1; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; padding: 7px 0;
+                      border: 1px solid #d0d7de; border-radius: 6px; background: transparent; color: #57606a; }
+  .segmented button[aria-pressed="true"] { color: #fff; border-color: transparent; }
+  .segmented button[data-v="PASS"][aria-pressed="true"] { background: #1a7f37; }
+  .segmented button[data-v="MAYBE"][aria-pressed="true"] { background: #bf8700; }
+  .segmented button[data-v="REJECT"][aria-pressed="true"] { background: #cf222e; }
+  #m-reason, #m-tag { width: 100%; font: inherit; font-size: 13px; padding: 7px 9px;
+                      border: 1px solid #d0d7de; border-radius: 6px; background: transparent; color: inherit; }
+  .m-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+  .m-spacer { flex: 1; }
+  .m-actions button { cursor: pointer; font: inherit; font-size: 13px; padding: 7px 14px; border-radius: 6px;
+                      border: 1px solid #d0d7de; background: transparent; color: inherit; }
+  .m-actions .primary { background: #0969da; border-color: transparent; color: #fff; font-weight: 600; }
+  .m-actions .danger { color: #cf222e; border-color: #f0c4c8; }
+  .m-actions .danger[hidden] { display: none; }
+  .m-error { color: #cf222e; font-size: 12px; margin: 10px 0 0; min-height: 1em; }
   .badge { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 4px; color: #fff; }
   .badge.PASS { background: #1a7f37; } .badge.MAYBE { background: #bf8700; } .badge.REJECT { background: #cf222e; }
   .new { font-size: 10px; font-weight: 700; color: #0969da; border: 1px solid #0969da; border-radius: 4px; padding: 1px 5px; }
@@ -176,13 +398,21 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
     .ask { background: #2d2410; }
     .summary, .sub, .meta, .showing { color: #8b949e; }
     .sub .posted { color: #c9d1d9; }
+    .edit { border-color: #444c56; color: #8b949e; }
+    .edit:hover { background: #21262d; color: #e6edf3; }
+    .override .why { color: #c9d1d9; }
+    .override .tag { background: #21262d; color: #8b949e; }
+    #edit-modal { background: #161b22; border-color: #30363d; color: #e6edf3; }
+    .segmented button, .m-actions button, #m-reason, #m-tag { border-color: #444c56; color: #c9d1d9; }
+    #m-reason, #m-tag { background: #0d1117; }
+    .m-actions .primary { background: #1f6feb; color: #fff; }
   }
 </style>
 </head>
 <body>
 <header>
-  <h1>Remote PM Job Digest</h1>
-  <div class="summary">Generated ${now} · ${jobs.length} classified · ${pass.length} PASS · ${maybe.length} MAYBE · ${reject.length} REJECT · candidate UTC+7 (Bangkok)</div>
+  <h1>Remote PM Job Digest${review ? ` <span class="edited">REVIEW MODE</span>` : ""}</h1>
+  <div class="summary">Generated ${now} · <span id="tally">${jobs.length} classified · ${pass.length} PASS · ${maybe.length} MAYBE · ${reject.length} REJECT${edited ? ` · ${edited} edited by hand` : ""}</span> · candidate UTC+7 (Bangkok)</div>
 </header>
 <div class="filters">
   <div class="filter-row"><span class="filter-label">Verdict</span>${verdictChips}</div>
@@ -200,6 +430,7 @@ export function renderDigest(jobs: ClassifiedJob[]): string {
 <div id="job-list">
 ${listCards}
 </div>
+${modal}
 <script>
 (function () {
   var DAY_MS = 86400000;
@@ -215,6 +446,16 @@ ${listCards}
     var raw = card.dataset.postedMs;
     if (!raw) return true;                   // undated → always visible, never lost
     return (Date.now() - parseInt(raw, 10)) <= days * DAY_MS;
+  }
+  var tallyEl = document.getElementById('tally');
+  // Header tally reflects the EFFECTIVE verdicts currently on the page, so it stays
+  // truthful after a hand-edit changes a card's verdict.
+  function recount() {
+    if (!tallyEl) return;
+    var t = { PASS: 0, MAYBE: 0, REJECT: 0 }, edited = 0;
+    cards.forEach(function (c) { t[c.dataset.verdict]++; if (c.dataset.edited) edited++; });
+    tallyEl.textContent = cards.length + ' classified · ' + t.PASS + ' PASS · ' + t.MAYBE +
+      ' MAYBE · ' + t.REJECT + ' REJECT' + (edited ? ' · ' + edited + ' edited by hand' : '');
   }
   function apply() {
     var shown = 0;
@@ -235,6 +476,8 @@ ${listCards}
   });
   dateSel.addEventListener('change', apply);
   apply();
+  recount();
+${review ? REVIEW_JS : ""}
 })();
 </script>
 </body>
