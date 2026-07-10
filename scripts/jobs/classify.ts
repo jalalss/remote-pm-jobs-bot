@@ -108,6 +108,13 @@ function isRetryable(e: unknown): boolean {
 
 const MAX_DESC_CHARS = 8000;
 
+// `temperature` was REMOVED from these model families — sending it returns a 400. Haiku 4.5
+// (our production classifier) still accepts it, and we want temp 0 there for reproducibility.
+// Without this guard, `classifyJob(job, "claude-opus-4-8")` 400s and the catch below silently
+// degrades every job to MAYBE.
+const TEMPERATURE_REMOVED = /^claude-(fable-5|mythos-5|opus-4-[78]|sonnet-5)/;
+const supportsTemperature = (model: string) => !TEMPERATURE_REMOVED.test(model);
+
 export async function classifyJob(job: RawJob, model: string = config.model): Promise<Classification> {
   const structuredHints = [
     job.structuredLocation || job.structuredTimezone
@@ -148,7 +155,8 @@ export async function classifyJob(job: RawJob, model: string = config.model): Pr
       const response = await getClient().messages.parse({
         model,
         max_tokens: 1024,
-        temperature: 0, // deterministic: a classification should be reproducible run-to-run
+        // Reproducibility where the model still allows it (Haiku 4.5, production).
+        ...(supportsTemperature(model) ? { temperature: 0 } : {}),
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: userContent }],
         output_config: { format: zodOutputFormat(ClassificationSchema) },
@@ -157,6 +165,9 @@ export async function classifyJob(job: RawJob, model: string = config.model): Pr
       if (attempt === maxAttempts) return fallback("Classifier returned no structured output; review manually.");
     } catch (e) {
       if (attempt === maxAttempts || !isRetryable(e)) {
+        // A non-retryable error (e.g. a 400 from a bad request shape) would otherwise be laundered
+        // into a plausible-looking MAYBE across every job. Make it visible.
+        console.warn(`  ! classify(${model}) failed for ${job.id}: ${e instanceof Error ? e.message.slice(0, 120) : e}`);
         return fallback(`Classifier error (${e instanceof Error ? e.message.slice(0, 80) : e}); review manually.`);
       }
     }

@@ -7,7 +7,7 @@
 //   labels         export human overrides -> JSONL          (the human-vs-LLM dataset)
 //   langcheck      free sweep: non-English PASS/MAYBE -> REJECT   (no API key)
 //   reject <ids…>  force-REJECT specific jobs                (no API key)
-import { runFetch, runClassify, runRender, runLangSweep, runReject, runMigrate, runLabelsExport } from "./pipeline.js";
+import { runFetch, runClassify, runRender, runLangSweep, runReject, runMigrate, runLabelsExport, runScore } from "./pipeline.js";
 import { runReview } from "./review-server.js";
 
 function requireApiKey() {
@@ -39,6 +39,13 @@ async function main() {
     case "reject":
       runReject(args.filter((a) => !a.startsWith("--")));
       break;
+    case "score": {
+      requireApiKey();
+      const limitIdx = args.indexOf("--limit");
+      const limit = limitIdx >= 0 ? Number(args[limitIdx + 1]) : undefined;
+      await runScore({ force, limit });
+      break;
+    }
     case "review": {
       const portIdx = args.indexOf("--port");
       runReview(portIdx >= 0 ? Number(args[portIdx + 1]) : undefined);
@@ -57,7 +64,7 @@ async function main() {
       runRender();
       break;
     default:
-      console.error(`Unknown command "${cmd}". Use: all | fetch | classify [--force] [--source <name>] | render | review [--port N] | labels | langcheck | reject <ids...> | migrate`);
+      console.error(`Unknown command "${cmd}". Use: all | fetch | classify [--force] [--source <name>] | score [--force] [--limit N] | render | review [--port N] | labels | langcheck | reject <ids...> | migrate`);
       process.exit(1);
   }
 }

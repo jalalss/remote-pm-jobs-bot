@@ -55,6 +55,9 @@ function byPostedDesc(a: ClassifiedJob, b: ClassifiedJob): number {
   return bm - am;
 }
 
+// Fit-score colour band: green ≥8, amber ≥6, grey ≥4, muted below.
+const scoreBand = (s: number) => (s >= 8 ? "hi" : s >= 6 ? "mid" : s >= 4 ? "lo" : "vlo");
+
 function card(job: ClassifiedJob, review: boolean): string {
   const c = job.classification;
   const v = effectiveVerdict(job); // human's verdict wins over the classifier's
@@ -85,9 +88,25 @@ function card(job: ClassifiedJob, review: boolean): string {
     : "";
   const editBtn = review ? `<button class="edit" title="Edit this job" aria-label="Edit this job">✎</button>` : "";
 
+  // Role fit: "is this worth applying to?" — distinct from the verdict's "can I take it?".
+  const f = job.fit;
+  const scoreChip = f
+    ? `<span class="score ${scoreBand(f.score)}" title="Role fit (0–10)">${f.score.toFixed(1)}</span>`
+    : "";
+  const li = (xs: string[]) => xs.map((x) => `<li>${escapeHtml(x)}</li>`).join("");
+  const fitBlock = f
+    ? `<div class="fit">
+         <p class="fit-reason">${escapeHtml(f.reason)}</p>
+         ${f.strengths.length ? `<div class="fit-col"><h4>Lead with</h4><ul class="good">${li(f.strengths)}</ul></div>` : ""}
+         ${f.gaps.length ? `<div class="fit-col"><h4>Expect</h4><ul class="bad">${li(f.gaps)}</ul></div>` : ""}
+         ${f.angle ? `<p class="angle"><strong>Angle:</strong> ${escapeHtml(f.angle)}</p>` : ""}
+       </div>`
+    : "";
+
   return `
-  <article class="card ${v}" data-job-id="${escapeHtml(job.id)}" data-verdict="${v}" data-llm-verdict="${c.verdict}" data-edited="${o?.verdict ? "1" : ""}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}" data-title="${escapeHtml(job.title)}" data-company="${escapeHtml(job.company)}" data-reason="${escapeHtml(o?.reason ?? "")}" data-rule-tag="${escapeHtml(o?.ruleTag ?? "")}">
+  <article class="card ${v}" data-job-id="${escapeHtml(job.id)}" data-verdict="${v}" data-llm-verdict="${c.verdict}" data-edited="${o?.verdict ? "1" : ""}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}" data-score="${f ? f.score : ""}" data-title="${escapeHtml(job.title)}" data-company="${escapeHtml(job.company)}" data-reason="${escapeHtml(o?.reason ?? "")}" data-rule-tag="${escapeHtml(o?.ruleTag ?? "")}">
     <div class="head">
+      ${scoreChip}
       <span class="badge ${v}">${v}</span>
       ${editedBadge}
       ${newBadge}
@@ -102,6 +121,7 @@ function card(job: ClassifiedJob, review: boolean): string {
       <span class="posted">${escapeHtml(relativeAge(job.postedAt))}</span>
     </div>
     ${overrideNote}
+    ${fitBlock}
     <p class="reason">${escapeHtml(c.reason)}</p>
     ${evidence}
     ${tz}
@@ -243,6 +263,7 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   const maybe = jobs.filter((j) => effectiveVerdict(j) === "MAYBE");
   const reject = jobs.filter((j) => effectiveVerdict(j) === "REJECT");
   const edited = jobs.filter((j) => j.override?.verdict).length;
+  const scored = jobs.filter((j) => j.fit).length; // drives the default sort
   const now = new Date().toISOString().replace("T", " ").slice(0, 16);
 
   const sourceCounts = new Map<string, number>();
@@ -327,7 +348,7 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   .chip.verdict.MAYBE.active { background: #bf8700; }
   .chip.verdict.REJECT.active { background: #cf222e; }
   .chip-n { opacity: .7; font-size: 11px; }
-  #date-filter { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px;
+  #date-filter, #sort-by, #min-score { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 999px;
                  border: 1px solid #ccc; background: transparent; color: #444; cursor: pointer; }
   .showing { font-size: 12px; color: #888; margin-top: 8px; }
   .card { background: #fff; border: 1px solid #e5e5e5; border-left-width: 4px;
@@ -337,6 +358,21 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   .card.REJECT { border-left-color: #cf222e; }
   .head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .head h3 { font-size: 16px; margin: 0; }
+  /* Role-fit score chip */
+  .score { font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 6px; color: #fff; min-width: 34px; text-align: center; }
+  .score.hi  { background: #1a7f37; }
+  .score.mid { background: #bf8700; }
+  .score.lo  { background: #6e7781; }
+  .score.vlo { background: #b0b6bd; }
+  .fit { margin: 8px 0; padding: 10px 12px; background: #f6f8fa; border: 1px solid #e5e5e5; border-radius: 6px; }
+  .fit-reason { margin: 0 0 8px; font-size: 13px; color: #333; }
+  .fit-col h4 { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+                color: #888; margin: 8px 0 3px; }
+  .fit ul { margin: 0; padding-left: 18px; font-size: 13px; }
+  .fit ul.good li { color: #1a7f37; }
+  .fit ul.bad li { color: #9a3412; }
+  .fit ul li span, .fit ul li { color: inherit; }
+  .angle { margin: 10px 0 0; font-size: 13px; background: #eaf3ff; padding: 8px 10px; border-radius: 5px; color: #1a1a1a; }
   /* Edit button pinned to the card's top-right. */
   .edit { margin-left: auto; cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 8px;
           border: 1px solid #d0d7de; border-radius: 6px; background: transparent; color: #57606a; }
@@ -392,12 +428,17 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
     body { color: #e6edf3; background: #0d1117; }
     .filters { background: #0d1117; border-color: #30363d; }
     .chip { border-color: #444c56; color: #8b949e; }
-    #date-filter { border-color: #444c56; color: #c9d1d9; }
+    #date-filter, #sort-by, #min-score { border-color: #444c56; color: #c9d1d9; }
     .card { background: #161b22; border-color: #30363d; }
     blockquote { background: #21262d; border-left-color: #444c56; color: #c9d1d9; }
     .ask { background: #2d2410; }
     .summary, .sub, .meta, .showing { color: #8b949e; }
     .sub .posted { color: #c9d1d9; }
+    .fit { background: #21262d; border-color: #30363d; }
+    .fit-reason { color: #c9d1d9; }
+    .fit ul.good li { color: #3fb950; }
+    .fit ul.bad li { color: #f0883e; }
+    .angle { background: #0d2b52; color: #e6edf3; }
     .edit { border-color: #444c56; color: #8b949e; }
     .edit:hover { background: #21262d; color: #e6edf3; }
     .override .why { color: #c9d1d9; }
@@ -412,7 +453,7 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
 <body>
 <header>
   <h1>Remote PM Job Digest${review ? ` <span class="edited">REVIEW MODE</span>` : ""}</h1>
-  <div class="summary">Generated ${now} · <span id="tally">${jobs.length} classified · ${pass.length} PASS · ${maybe.length} MAYBE · ${reject.length} REJECT${edited ? ` · ${edited} edited by hand` : ""}</span> · candidate UTC+7 (Bangkok)</div>
+  <div class="summary">Generated ${now} · <span id="tally">${jobs.length} classified · ${pass.length} PASS · ${maybe.length} MAYBE · ${reject.length} REJECT${edited ? ` · ${edited} edited by hand` : ""}</span>${scored ? ` · ${scored} scored for fit` : ""} · candidate UTC+7 (Bangkok)</div>
 </header>
 <div class="filters">
   <div class="filter-row"><span class="filter-label">Verdict</span>${verdictChips}</div>
@@ -423,6 +464,19 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
       <option value="1">Last 24 hours</option>
       <option value="7">Last 7 days</option>
       <option value="30">Last 30 days</option>
+    </select>
+  </div>
+  <div class="filter-row"><span class="filter-label">Fit</span>
+    <select id="sort-by">
+      <option value="score" ${scored ? "selected" : ""}>Sort: fit score (high→low)</option>
+      <option value="date" ${scored ? "" : "selected"}>Sort: date posted (newest)</option>
+    </select>
+    <select id="min-score">
+      <option value="0" selected>Any score</option>
+      <option value="5">5.0+</option>
+      <option value="6">6.0+</option>
+      <option value="7">7.0+</option>
+      <option value="8">8.0+</option>
     </select>
   </div>
   <div class="showing">Showing <span id="shown-count">0</span> of ${jobs.length} jobs · click chips to toggle</div>
@@ -440,12 +494,42 @@ ${modal}
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
   var countEl = document.getElementById('shown-count');
   var dateSel = document.getElementById('date-filter');
+  var sortSel = document.getElementById('sort-by');
+  var minScoreSel = document.getElementById('min-score');
+  var listEl = document.getElementById('job-list');
   function withinWindow(card) {
     var days = parseInt(dateSel.value, 10);
     if (!days) return true;                 // Anytime
     var raw = card.dataset.postedMs;
     if (!raw) return true;                   // undated → always visible, never lost
     return (Date.now() - parseInt(raw, 10)) <= days * DAY_MS;
+  }
+  function meetsScore(card) {
+    var min = parseFloat(minScoreSel.value);
+    if (!min) return true;                   // Any score
+    var raw = card.dataset.score;
+    if (!raw) return true;                   // unscored → never silently lost
+    return parseFloat(raw) >= min;
+  }
+  // Re-order the DOM. Unscored jobs sort last under "fit score"; undated first under "date".
+  function sortCards() {
+    var byScore = sortSel.value === 'score';
+    var sorted = cards.slice().sort(function (a, b) {
+      if (byScore) {
+        var as = a.dataset.score === '' ? -1 : parseFloat(a.dataset.score);
+        var bs = b.dataset.score === '' ? -1 : parseFloat(b.dataset.score);
+        if (as !== bs) return bs - as;
+      }
+      var am = a.dataset.postedMs === '' ? Infinity : parseInt(a.dataset.postedMs, 10);
+      var bm = b.dataset.postedMs === '' ? Infinity : parseInt(b.dataset.postedMs, 10);
+      if (am === Infinity && bm === Infinity) return 0;
+      if (am === Infinity) return -1;
+      if (bm === Infinity) return 1;
+      return bm - am;
+    });
+    var frag = document.createDocumentFragment();
+    sorted.forEach(function (c) { frag.appendChild(c); });
+    listEl.appendChild(frag);
   }
   var tallyEl = document.getElementById('tally');
   // Header tally reflects the EFFECTIVE verdicts currently on the page, so it stays
@@ -460,7 +544,8 @@ ${modal}
   function apply() {
     var shown = 0;
     cards.forEach(function (card) {
-      var show = state.verdict[card.dataset.verdict] && state.source[card.dataset.source] && withinWindow(card);
+      var show = state.verdict[card.dataset.verdict] && state.source[card.dataset.source]
+        && withinWindow(card) && meetsScore(card);
       card.style.display = show ? '' : 'none';
       if (show) shown++;
     });
@@ -475,6 +560,9 @@ ${modal}
     });
   });
   dateSel.addEventListener('change', apply);
+  minScoreSel.addEventListener('change', apply);
+  sortSel.addEventListener('change', sortCards);
+  sortCards();
   apply();
   recount();
 ${review ? REVIEW_JS : ""}

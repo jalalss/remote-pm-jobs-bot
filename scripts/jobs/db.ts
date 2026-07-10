@@ -1,4 +1,4 @@
-// SQLite data-access layer (better-sqlite3). Three tables:
+// SQLite data-access layer (better-sqlite3). Four tables:
 //   jobs             — fetched listings
 //   classifications  — the CLASSIFIER's verdict (rewritten freely by `classify --force`)
 //   job_overrides    — the HUMAN's edits for a job, never touched by classify, so a manual
@@ -6,9 +6,13 @@
 //                      alongside it (that pairing is the rubric-refinement dataset).
 //                      Deliberately a general "user edits" row: a `status` column
 //                      (Viewed/Applied) can be added later via the guarded-ALTER pattern below.
+//   fit_scores       — "is this worth applying to?" (0–10) vs the classifier's "can I take it?".
+//                      Own table, so `classify --force` can never destroy it. `persona_hash`
+//                      records which candidate persona produced the score, so editing the CV or
+//                      preferences marks scores stale and only those get re-scored.
 import Database from "better-sqlite3";
 import { config } from "./config.js";
-import type { Classification, JobOverride, RawJob, Verdict } from "./types.js";
+import type { Classification, FitScore, JobOverride, RawJob, Verdict } from "./types.js";
 
 export type ClassificationMethod = "llm" | "language" | "manual";
 export interface JobWithMeta extends RawJob {
@@ -44,6 +48,14 @@ function db(): Database.Database {
       verdict TEXT, reason TEXT, rule_tag TEXT,
       updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS fit_scores (
+      job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+      score REAL NOT NULL,
+      strengths TEXT, gaps TEXT, angle TEXT, reason TEXT,
+      model TEXT NOT NULL,
+      persona_hash TEXT NOT NULL,
+      scored_at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_class_verdict ON classifications(verdict);
     CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
   `);
@@ -75,6 +87,12 @@ interface OverrideRow {
   o_verdict: string | null; o_reason: string | null;
   o_rule_tag: string | null; o_updated_at: string | null;
 }
+/** LEFT JOINed fit-score columns, aliased the same way. */
+interface FitRow {
+  f_score: number | null; f_strengths: string | null; f_gaps: string | null;
+  f_angle: string | null; f_reason: string | null; f_model: string | null;
+  f_persona_hash: string | null; f_scored_at: string | null;
+}
 
 function rowToOverride(r: OverrideRow): JobOverride | undefined {
   if (!r.o_updated_at) return undefined; // no override row for this job
@@ -83,6 +101,25 @@ function rowToOverride(r: OverrideRow): JobOverride | undefined {
     reason: r.o_reason,
     ruleTag: r.o_rule_tag,
     updatedAt: r.o_updated_at,
+  };
+}
+
+const parseList = (s: string | null): string[] => {
+  if (!s) return [];
+  try { const v = JSON.parse(s); return Array.isArray(v) ? v.map(String) : []; } catch { return []; }
+};
+
+function rowToFit(r: FitRow): FitScore | undefined {
+  if (r.f_scored_at === null || r.f_score === null) return undefined;
+  return {
+    score: r.f_score,
+    strengths: parseList(r.f_strengths),
+    gaps: parseList(r.f_gaps),
+    angle: r.f_angle ?? "",
+    reason: r.f_reason ?? "",
+    model: r.f_model ?? "",
+    personaHash: r.f_persona_hash ?? "",
+    scoredAt: r.f_scored_at,
   };
 }
 
@@ -211,24 +248,85 @@ export function upsertClassification(jobId: string, c: Classification, method: C
  *  `verdicts` filter applies to the EFFECTIVE verdict (the human's if set, else the LLM's). */
 export function classifiedJobs(
   verdicts?: Verdict[],
-): { job: JobWithMeta; classification: Classification; override?: JobOverride }[] {
+): { job: JobWithMeta; classification: Classification; override?: JobOverride; fit?: FitScore }[] {
   const where = verdicts && verdicts.length
     ? `WHERE COALESCE(o.verdict, c.verdict) IN (${verdicts.map(() => "?").join(",")})`
     : "";
   const rows = db()
     .prepare(`SELECT j.*, c.verdict, c.reason, c.evidence, c.work_model, c.location_restriction,
                      c.timezone_requirement, c.timezone_overlap_ok, c.recruiter_question, c.method, c.classified_at,
-                     o.verdict AS o_verdict, o.reason AS o_reason, o.rule_tag AS o_rule_tag, o.updated_at AS o_updated_at
+                     o.verdict AS o_verdict, o.reason AS o_reason, o.rule_tag AS o_rule_tag, o.updated_at AS o_updated_at,
+                     f.score AS f_score, f.strengths AS f_strengths, f.gaps AS f_gaps, f.angle AS f_angle,
+                     f.reason AS f_reason, f.model AS f_model, f.persona_hash AS f_persona_hash, f.scored_at AS f_scored_at
               FROM jobs j
               JOIN classifications c ON c.job_id = j.id
               LEFT JOIN job_overrides o ON o.job_id = j.id
+              LEFT JOIN fit_scores f ON f.job_id = j.id
               ${where}`)
-    .all(...(verdicts ?? [])) as (JobRow & ClassRow & OverrideRow)[];
+    .all(...(verdicts ?? [])) as (JobRow & ClassRow & OverrideRow & FitRow)[];
   return rows.map((r) => ({
     job: rowToJob(r),
     classification: rowToClassification(r),
     override: rowToOverride(r),
+    fit: rowToFit(r),
   }));
+}
+
+// ---- fit scores (never written by the classifier) ----
+
+/** Upsert the role-fit score for a job. */
+export function setFitScore(
+  jobId: string,
+  fit: Pick<FitScore, "score" | "strengths" | "gaps" | "angle" | "reason">,
+  model: string,
+  personaHash: string,
+): void {
+  db()
+    .prepare(`
+      INSERT INTO fit_scores (job_id, score, strengths, gaps, angle, reason, model, persona_hash, scored_at)
+      VALUES (@job_id, @score, @strengths, @gaps, @angle, @reason, @model, @persona_hash, @scored_at)
+      ON CONFLICT(job_id) DO UPDATE SET
+        score = excluded.score, strengths = excluded.strengths, gaps = excluded.gaps,
+        angle = excluded.angle, reason = excluded.reason, model = excluded.model,
+        persona_hash = excluded.persona_hash, scored_at = excluded.scored_at
+    `)
+    .run({
+      job_id: jobId,
+      score: fit.score,
+      strengths: JSON.stringify(fit.strengths),
+      gaps: JSON.stringify(fit.gaps),
+      angle: fit.angle,
+      reason: fit.reason,
+      model,
+      persona_hash: personaHash,
+      scored_at: new Date().toISOString(),
+    });
+}
+
+/**
+ * Jobs that still need scoring: effective verdict in `verdicts`, and either never scored or
+ * scored against a DIFFERENT persona (so editing the CV/preferences marks scores stale).
+ * `force` re-scores everything in scope. Ordered so PASS jobs are scored before MAYBE.
+ */
+export function unscoredJobs(
+  verdicts: Verdict[],
+  personaHash: string,
+  opts: { force?: boolean; limit?: number } = {},
+): JobWithMeta[] {
+  const placeholders = verdicts.map(() => "?").join(",");
+  const staleness = opts.force ? "" : `AND (f.job_id IS NULL OR f.persona_hash != ?)`;
+  const limit = opts.limit ? `LIMIT ${Math.max(1, Math.floor(opts.limit))}` : "";
+  const sql = `SELECT j.* FROM jobs j
+               JOIN classifications c ON c.job_id = j.id
+               LEFT JOIN job_overrides o ON o.job_id = j.id
+               LEFT JOIN fit_scores f ON f.job_id = j.id
+               WHERE COALESCE(o.verdict, c.verdict) IN (${placeholders}) ${staleness}
+               ORDER BY CASE COALESCE(o.verdict, c.verdict) WHEN 'PASS' THEN 0 ELSE 1 END,
+                        j.post_date DESC
+               ${limit}`;
+  const params: unknown[] = [...verdicts];
+  if (!opts.force) params.push(personaHash);
+  return (db().prepare(sql).all(...params) as JobRow[]).map(rowToJob);
 }
 
 // ---- human overrides (never written by the classifier) ----

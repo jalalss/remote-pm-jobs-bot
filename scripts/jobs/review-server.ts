@@ -13,10 +13,11 @@ const VERDICTS: Verdict[] = ["PASS", "MAYBE", "REJECT"];
 
 function digestHtml(): string {
   const cutoff = Date.now() - config.newBadgeHours * 3_600_000;
-  const jobs: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override }) => ({
+  const jobs: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override, fit }) => ({
     ...job,
     classification,
     override,
+    fit,
     isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
   }));
   return renderDigest(jobs, { review: true });

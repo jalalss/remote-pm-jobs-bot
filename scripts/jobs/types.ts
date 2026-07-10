@@ -58,11 +58,35 @@ export interface JobOverride {
   updatedAt: string;
 }
 
+/**
+ * How well this role fits the candidate (0–10). Answers "is this worth applying to?",
+ * whereas `Classification` answers "can I even take it from Thailand?".
+ * Stored in its own table so `classify --force` can never destroy it.
+ */
+export interface FitScore {
+  /** 0.0–10.0. Higher = better fit. */
+  score: number;
+  /** 2–3 things to lead with in the application. */
+  strengths: string[];
+  /** 2–3 gaps to expect / prepare for. */
+  gaps: string[];
+  /** One line on how to pitch himself for this role. Cover-letter seed. */
+  angle: string;
+  /** One sentence justifying the score. */
+  reason: string;
+  model: string;
+  /** Persona hash at scoring time — a mismatch means the score is stale. */
+  personaHash: string;
+  scoredAt: string;
+}
+
 /** A job plus its classification, ready to render. */
 export interface ClassifiedJob extends RawJob {
   classification: Classification;
   /** Human edit, if any. Its verdict wins over `classification.verdict` when set. */
   override?: JobOverride;
+  /** Role-fit score, if the job has been scored. */
+  fit?: FitScore;
   /** True if this job wasn't in the cache on a previous run. */
   isNew: boolean;
 }

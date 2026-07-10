@@ -36,6 +36,18 @@ export const config = {
   model: "claude-haiku-4-5",
 
   /**
+   * Model for ROLE-FIT scoring. Fit is a nuanced judgement against the candidate's persona, so this
+   * runs on Opus 4.8 (~$6 for all 195 PASS+MAYBE jobs). NOTE: Opus 4.8 REMOVED `temperature` — sending
+   * it returns 400 — so fit scores are inherently non-deterministic. That's fine: a score is a ranking
+   * aid, and anything the user disagrees with can be pinned via the review UI.
+   */
+  scoringModel: "claude-opus-4-8",
+  /** Thinking depth for scoring: low | medium | high | xhigh | max. Tune after the pilot batch. */
+  scoringEffort: "high",
+  /** Verdicts worth scoring — REJECTs are never applied to. */
+  scoringVerdicts: ["PASS", "MAYBE"],
+
+  /**
    * Safety ceiling on listings pulled per source — NOT a real constraint. Each source
    * caps itself (Remote OK ~100/tag, WWR ~23, Remotive ~28, Himalayas by page count).
    * Real cost control is the role + recency gates and himalayasPagesPerQuery.

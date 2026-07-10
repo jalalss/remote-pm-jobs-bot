@@ -36,6 +36,8 @@ yarn-error.log*
 
 # real CV / personal data (public repo ships a placeholder resume.ts instead)
 src/data/resume.local.ts
+# the real candidate persona (CV + evidence + stated facts + preferences)
+scripts/jobs/candidate.local.ts
 
 # job-application materials (cover letters etc. — contain real PII, never publish)
 applications/
@@ -63,3 +65,4 @@ next-env.d.ts
 .jobs.db-wal
 .jobs-labels.jsonl
 jobs-digest.html
+scripts/jobs/fixtures/fit-fixtures.local.ts

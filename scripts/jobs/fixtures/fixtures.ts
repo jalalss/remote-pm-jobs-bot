@@ -77,26 +77,31 @@ We recruit on a global basis and set a very high standard for people joining the
 Workplace Benefits: Highly competitive compensation package. Generous PTO and vacation policy. Exposure to the biggest and best eCommerce brands globally. Flexible hybrid working model with the convenience of a Sydney CBD office.`,
     }),
   },
-  {
-    name: "OneOcean",
-    expected: "MAYBE",
-    // KNOWN FLAKY (accepted). This case sits exactly on the MAYBE/REJECT boundary: a lone
-    // structured "Singapore" label with a body silent on work model. `temperature: 0` reduces
-    // variance but does not guarantee determinism, so this fixture occasionally comes back
-    // REJECT (the model infers "office-based in a single location"). Don't chase it — a real
-    // borderline job is what the manual override in `jobs:review` exists for.
-    note: "Faithful to the real posting: the BODY says nothing about work location; 'Singapore' appears ONLY in the structured board field. A single APAC bare label with a silent body → ambiguous, worth the EOR question. (Singapore is +8, adjacent to +7, so NOT scoped away.) NOTE: borderline — flips MAYBE/REJECT between runs even at temp 0.",
-    job: job({
-      title: "Senior Product Manager - Solutions",
-      company: "OneOcean",
-      structuredLocation: "Singapore",
-      descriptionText: `OneOcean is a unified brand born from the integration of OneOcean and Ocean Technologies Group. Owned by Lloyd's Register, an organisation with more than 260 years of trust, integrity and leadership at sea, OneOcean combines the agility and ambition of a fast-moving innovator with the strength and stability of one of the world's most trusted maritime institutions.
-
-As Senior Product Manager - Solutions, you will define, build and lead solution-oriented products and propositions that deliver measurable customer and commercial outcomes across Lloyd's Register's different product lines. You will shape strategy, drive prioritisation and work across compliance, advisory and digital portfolios to create scalable solutions.
-
-Essential: Demonstrable experience in senior product management, ideally in a B2B technology, services or data-driven environment. Exceptional stakeholder management skills, with the confidence to operate effectively at senior levels internally and externally.`,
-    }),
-  },
+  // ─── DISABLED: OneOcean (borderline, flaky) ──────────────────────────────────────────────
+  // Sits exactly on the MAYBE/REJECT boundary: a lone structured "Singapore" label with a body
+  // that says nothing about work model. `temperature: 0` reduces variance but does not guarantee
+  // determinism, so the model sometimes infers "office-based in a single location" and returns
+  // REJECT. We decided the case is genuinely ambiguous and not worth chasing — a real borderline
+  // job is exactly what the manual override in `jobs:review` exists for.
+  //
+  // MAYBE REVISIT: if the rubric ever changes how it reads a lone structured location label,
+  // re-enable this and see whether it lands consistently. Kept verbatim so it can be restored.
+  // {
+  //   name: "OneOcean",
+  //   expected: "MAYBE",
+  //   note: "Faithful to the real posting: the BODY says nothing about work location; 'Singapore' appears ONLY in the structured board field. A single APAC bare label with a silent body → ambiguous, worth the EOR question. (Singapore is +8, adjacent to +7, so NOT scoped away.)",
+  //   job: job({
+  //     title: "Senior Product Manager - Solutions",
+  //     company: "OneOcean",
+  //     structuredLocation: "Singapore",
+  //     descriptionText: `OneOcean is a unified brand born from the integration of OneOcean and Ocean Technologies Group. Owned by Lloyd's Register, an organisation with more than 260 years of trust, integrity and leadership at sea, OneOcean combines the agility and ambition of a fast-moving innovator with the strength and stability of one of the world's most trusted maritime institutions.
+  //
+  // As Senior Product Manager - Solutions, you will define, build and lead solution-oriented products and propositions that deliver measurable customer and commercial outcomes across Lloyd's Register's different product lines. You will shape strategy, drive prioritisation and work across compliance, advisory and digital portfolios to create scalable solutions.
+  //
+  // Essential: Demonstrable experience in senior product management, ideally in a B2B technology, services or data-driven environment. Exceptional stakeholder management skills, with the confidence to operate effectively at senior levels internally and externally.`,
+  //   }),
+  // },
+  // ─────────────────────────────────────────────────────────────────────────────────────────
   {
     name: "M32 AI (Wing)",
     expected: "PASS",

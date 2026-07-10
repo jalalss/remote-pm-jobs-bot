@@ -7,8 +7,11 @@ import { effectiveVerdict, type Classification, type ClassifiedJob, type RawJob,
 import { classifyJob } from "./classify.js";
 import {
   upsertJobs, allJobIds, pruneJobsOlderThan, allJobs, unclassifiedJobs,
-  upsertClassification, classifiedJobs, forceReject, counts, type JobWithMeta,
+  upsertClassification, classifiedJobs, forceReject, counts, setFitScore, unscoredJobs,
+  type JobWithMeta,
 } from "./db.js";
+import { loadCandidate, personaHash } from "./candidate.js";
+import { scoreJob } from "./score.js";
 import { detectLang, snippet } from "./lang.js";
 import { renderDigest } from "./render.js";
 import { loadRawStore } from "./store.js";
@@ -140,13 +143,73 @@ export async function runClassify({ force = false, source }: { force?: boolean; 
   console.log(`DB: ${c.classifications} classifications. By verdict: ${JSON.stringify(c.byVerdict)}`);
 }
 
+/** SCORE: rate PASS/MAYBE jobs 0–10 for role fit against the candidate persona. Needs API key.
+ *  Scores live in their own table, so `classify --force` can never destroy them. Editing the
+ *  persona changes its hash, which marks every score stale so only those get re-scored. */
+export async function runScore({ force = false, limit }: { force?: boolean; limit?: number } = {}): Promise<void> {
+  const candidate = await loadCandidate();
+  const hash = personaHash(candidate);
+  const verdicts = [...config.scoringVerdicts] as Verdict[];
+  const todo = unscoredJobs(verdicts, hash, { force, limit });
+
+  const scope = [force ? "force: all" : null, limit ? `limit: ${limit}` : null].filter(Boolean).join(", ");
+  console.log(`Scoring ${todo.length} ${verdicts.join("/")} jobs with ${config.scoringModel} (effort: ${config.scoringEffort})${scope ? ` [${scope}]` : ""}...`);
+  console.log(`  persona ${hash} · PASS jobs first`);
+  if (!todo.length) {
+    console.log("  Nothing to score — all in-scope jobs are current for this persona.");
+    return;
+  }
+
+  // Aggregators repost the same JD under different ids (Pennylane appears 7x, Bjak 4x). Score ONE
+  // representative per byte-identical description and copy the result to its siblings. This saves
+  // ~14% of the spend, but the real win is the ranking: without it, seven copies of one job crowd
+  // the top of a score-sorted queue, each with a slightly different score (Opus 4.8 removed
+  // `temperature`, so identical input varies ~±0.5).
+  const groups = new Map<string, JobWithMeta[]>();
+  for (const j of todo) {
+    const key = `${j.company}\u0000${j.descriptionText}`;
+    const g = groups.get(key);
+    if (g) g.push(j);
+    else groups.set(key, [j]);
+  }
+  const reps = [...groups.values()];
+  const dupes = todo.length - reps.length;
+  if (dupes) console.log(`  ${reps.length} unique postings (${dupes} exact duplicates will share their twin's score)`);
+
+  let done = 0;
+  let failed = 0;
+  await pMap(reps, 4, async (siblings) => {
+    const fit = await scoreJob(siblings[0], candidate);
+    if (fit) for (const s of siblings) setFitScore(s.id, fit, config.scoringModel, hash);
+    else failed++;
+    done++;
+    if (done % 10 === 0 || done === reps.length) console.log(`  scored ${done}/${reps.length} unique`);
+  });
+
+  // Distribution tells you at a glance whether the rubric is calibrated or bunched.
+  const scored = classifiedJobs(verdicts).filter((r) => r.fit);
+  const buckets: Record<string, number> = { "8–10": 0, "6–8": 0, "4–6": 0, "0–4": 0 };
+  for (const { fit } of scored) {
+    const s = fit!.score;
+    buckets[s >= 8 ? "8–10" : s >= 6 ? "6–8" : s >= 4 ? "4–6" : "0–4"]++;
+  }
+  console.log(`\nDB: ${scored.length} scored${failed ? `, ${failed} failed (left unscored, not faked)` : ""}.`);
+  console.log(`  Distribution: ${Object.entries(buckets).map(([k, v]) => `${k}: ${v}`).join(" · ")}`);
+  const top = scored.sort((a, b) => b.fit!.score - a.fit!.score).slice(0, 5);
+  if (top.length) {
+    console.log(`  Top 5:`);
+    for (const { job, fit } of top) console.log(`    ${fit!.score.toFixed(1)}  ${job.title.slice(0, 52)} — ${job.company}`);
+  }
+}
+
 /** RENDER: join jobs + classifications (+ any human override) -> HTML. No API key, no network. */
 export function runRender(): void {
   const cutoff = Date.now() - config.newBadgeHours * 3_600_000;
-  const classified: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override }) => ({
+  const classified: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override, fit }) => ({
     ...job,
     classification,
     override,
+    fit,
     isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
   }));
   writeFileSync(config.outputPath, renderDigest(classified), "utf8");

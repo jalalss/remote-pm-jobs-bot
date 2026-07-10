@@ -10,13 +10,15 @@
     "jobs": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts all",
     "jobs:fetch": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts fetch",
     "jobs:classify": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts classify",
+    "jobs:score": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts score",
     "jobs:render": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts render",
     "jobs:review": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts review",
     "jobs:labels": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts labels",
     "jobs:langcheck": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts langcheck",
     "jobs:reject": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts reject",
     "jobs:migrate": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/index.ts migrate",
-    "jobs:test": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/test.ts"
+    "jobs:test": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/test.ts",
+    "jobs:score-test": "node --env-file-if-exists=.env.local --import tsx scripts/jobs/score-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
