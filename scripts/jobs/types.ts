@@ -80,6 +80,33 @@ export interface FitScore {
   scoredAt: string;
 }
 
+/**
+ * Where a job sits in the application funnel. Set by hand, one click per transition.
+ *
+ * NOTE there is no `ghosted` here: that state is DERIVED (status is `applied` and
+ * `config.ghostedAfterDays` have passed with no reply), never stored. See `Application`.
+ */
+export type ApplicationStatus = "shortlisted" | "applied" | "interview" | "rejected";
+
+/**
+ * The candidate's current position in the funnel for one job, folded up from the
+ * append-only `application_events` log.
+ *
+ * Every transition is its own immutable row, so a job that goes applied → interview →
+ * rejected keeps ALL THREE timestamps — the rejection never overwrites the interview.
+ * That is what makes response-latency analytics possible after the fact.
+ */
+export interface Application {
+  /** The latest event's status. */
+  status: ApplicationStatus;
+  /** Note on the latest event, if any. */
+  note: string | null;
+  /** FIRST time this job entered `applied`. Undefined if it never has. Drives `ghosted`. */
+  appliedAt?: string;
+  /** When the current status was set. */
+  statusAt: string;
+}
+
 /** A job plus its classification, ready to render. */
 export interface ClassifiedJob extends RawJob {
   classification: Classification;
@@ -87,6 +114,8 @@ export interface ClassifiedJob extends RawJob {
   override?: JobOverride;
   /** Role-fit score, if the job has been scored. */
   fit?: FitScore;
+  /** Funnel status, if the candidate has acted on this job. */
+  application?: Application;
   /** True if this job wasn't in the cache on a previous run. */
   isNew: boolean;
 }

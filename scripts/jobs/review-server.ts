@@ -5,21 +5,34 @@
 // SQLite on every GET and takes label writes over POST. Single-user, no auth by design.
 import { createServer } from "node:http";
 import { config } from "./config.js";
-import { classifiedJobs, clearOverride, jobExists, setOverride } from "./db.js";
+import {
+  addApplicationEvent,
+  classifiedJobs,
+  clearOverride,
+  currentApplication,
+  jobExists,
+  setApplicationNote,
+  setOverride,
+  undoLastApplicationEvent,
+} from "./db.js";
 import { renderDigest } from "./render.js";
-import type { ClassifiedJob, Verdict } from "./types.js";
+import type { ApplicationStatus, ClassifiedJob, Verdict } from "./types.js";
 
 const VERDICTS: Verdict[] = ["PASS", "MAYBE", "REJECT"];
+const STATUSES = [...config.applicationStatuses] as ApplicationStatus[];
 
 function digestHtml(): string {
   const cutoff = Date.now() - config.newBadgeHours * 3_600_000;
-  const jobs: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override, fit }) => ({
-    ...job,
-    classification,
-    override,
-    fit,
-    isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
-  }));
+  const jobs: ClassifiedJob[] = classifiedJobs().map(
+    ({ job, classification, override, fit, application }) => ({
+      ...job,
+      classification,
+      override,
+      fit,
+      application,
+      isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
+    }),
+  );
   return renderDigest(jobs, { review: true });
 }
 
@@ -78,6 +91,43 @@ export function runReview(port: number = config.reviewPort): void {
         if (!jobExists(jobId)) return json(404, { ok: false, error: "unknown job id" });
         clearOverride(jobId);
         console.log(`  ↩ reverted to LLM verdict: ${jobId}`);
+        return json(200, { ok: true });
+      }
+
+      // ---- application funnel ----
+
+      if (req.method === "POST" && req.url === "/status") {
+        const body = await readJson(req);
+        const jobId = String(body.jobId ?? "");
+        const status = String(body.status ?? "") as ApplicationStatus;
+
+        if (!jobExists(jobId)) return json(404, { ok: false, error: "unknown job id" });
+        if (!STATUSES.includes(status)) return json(400, { ok: false, error: "bad status" });
+
+        addApplicationEvent(jobId, status);
+        console.log(`  → ${status.padEnd(11)} ${jobId}`);
+        return json(200, { ok: true, at: new Date().toISOString() });
+      }
+
+      if (req.method === "POST" && req.url === "/status/undo") {
+        const body = await readJson(req);
+        const jobId = String(body.jobId ?? "");
+        if (!jobExists(jobId)) return json(404, { ok: false, error: "unknown job id" });
+
+        undoLastApplicationEvent(jobId);
+        // The card needs the status it fell back to, which may be an earlier event or none.
+        const now = currentApplication(jobId);
+        console.log(`  ↩ undo → ${now?.status ?? "(no status)"}  ${jobId}`);
+        return json(200, { ok: true, application: now });
+      }
+
+      if (req.method === "POST" && req.url === "/status/note") {
+        const body = await readJson(req);
+        const jobId = String(body.jobId ?? "");
+        const note = body.note ? String(body.note) : null;
+        if (!jobExists(jobId)) return json(404, { ok: false, error: "unknown job id" });
+        if (!setApplicationNote(jobId, note))
+          return json(400, { ok: false, error: "no status set yet — set one before adding a note" });
         return json(200, { ok: true });
       }
 

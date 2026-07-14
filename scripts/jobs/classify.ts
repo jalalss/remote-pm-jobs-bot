@@ -115,7 +115,18 @@ const MAX_DESC_CHARS = 8000;
 const TEMPERATURE_REMOVED = /^claude-(fable-5|mythos-5|opus-4-[78]|sonnet-5)/;
 const supportsTemperature = (model: string) => !TEMPERATURE_REMOVED.test(model);
 
-export async function classifyJob(job: RawJob, model: string = config.model): Promise<Classification> {
+/**
+ * Classify one job. Returns `null` — writing NOTHING — if the model can't be reached.
+ *
+ * This used to return a synthesized `MAYBE` on failure ("never drop a job on a hiccup"). That
+ * was actively destructive: under `--force` the upsert overwrote a perfectly good verdict with a
+ * fabricated one, so an expired API key silently rewrote hundreds of jobs to MAYBE. A missing
+ * classification is honest and self-healing (the next run picks the job up); a fabricated one is
+ * indistinguishable from a real verdict and corrupts the queue.
+ *
+ * `scoreJob` has always had this contract. Callers MUST skip the upsert on null.
+ */
+export async function classifyJob(job: RawJob, model: string = config.model): Promise<Classification | null> {
   const structuredHints = [
     job.structuredLocation || job.structuredTimezone
       ? "Structured board fields (see the asymmetry rule — may support PASS, must NEVER be the sole basis for REJECT):"
@@ -137,17 +148,10 @@ export async function classifyJob(job: RawJob, model: string = config.model): Pr
     .filter((s) => s !== null && s !== undefined)
     .join("\n");
 
-  // Never drop a job on a classifier hiccup — surface it as MAYBE for manual review.
-  const fallback = (reason: string): Classification => ({
-    workModel: "unclear",
-    locationRestriction: "unclear",
-    evidence: null,
-    timezoneRequirement: null,
-    timezoneOverlapOk: null,
-    verdict: "MAYBE",
-    reason,
-    recruiterQuestion: "Is this role open to candidates based in Thailand (UTC+7)?",
-  });
+  const fail = (why: string): null => {
+    console.warn(`  ! classify(${model}) failed for ${job.id}: ${why.slice(0, 120)}`);
+    return null;
+  };
 
   const maxAttempts = 4;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -162,16 +166,13 @@ export async function classifyJob(job: RawJob, model: string = config.model): Pr
         output_config: { format: zodOutputFormat(ClassificationSchema) },
       });
       if (response.parsed_output) return response.parsed_output;
-      if (attempt === maxAttempts) return fallback("Classifier returned no structured output; review manually.");
+      if (attempt === maxAttempts) return fail("returned no structured output");
     } catch (e) {
       if (attempt === maxAttempts || !isRetryable(e)) {
-        // A non-retryable error (e.g. a 400 from a bad request shape) would otherwise be laundered
-        // into a plausible-looking MAYBE across every job. Make it visible.
-        console.warn(`  ! classify(${model}) failed for ${job.id}: ${e instanceof Error ? e.message.slice(0, 120) : e}`);
-        return fallback(`Classifier error (${e instanceof Error ? e.message.slice(0, 80) : e}); review manually.`);
+        return fail(e instanceof Error ? e.message : String(e));
       }
     }
     await new Promise((r) => setTimeout(r, 800 * 2 ** (attempt - 1))); // 0.8s, 1.6s, 3.2s
   }
-  return fallback("Classifier error; review manually."); // unreachable
+  return fail("exhausted retries");
 }

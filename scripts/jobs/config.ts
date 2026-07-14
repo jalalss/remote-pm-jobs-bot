@@ -166,6 +166,17 @@ export const config = {
     "structured-field",
     "other",
   ],
+  /**
+   * The application funnel. One source of truth, shared by the review server's validation and
+   * the card's button row — same arrangement as `ruleTags` above.
+   *
+   * `ghosted` is deliberately absent: it is DERIVED (still `applied` after `ghostedAfterDays`),
+   * so there is no button to forget to click and no status that can go stale.
+   */
+  applicationStatuses: ["shortlisted", "applied", "interview", "rejected"],
+  /** An applied job with no reply after this many days shows as GHOSTED. */
+  ghostedAfterDays: 30,
+
   /** Port for the local review server (`npm run jobs:review`). */
   reviewPort: 4321,
 

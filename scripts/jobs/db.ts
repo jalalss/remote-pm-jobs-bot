@@ -1,18 +1,29 @@
-// SQLite data-access layer (better-sqlite3). Four tables:
+// SQLite data-access layer (better-sqlite3). Five tables:
 //   jobs             — fetched listings
 //   classifications  — the CLASSIFIER's verdict (rewritten freely by `classify --force`)
-//   job_overrides    — the HUMAN's edits for a job, never touched by classify, so a manual
-//                      verdict survives re-classification AND the LLM's opinion is preserved
-//                      alongside it (that pairing is the rubric-refinement dataset).
-//                      Deliberately a general "user edits" row: a `status` column
-//                      (Viewed/Applied) can be added later via the guarded-ALTER pattern below.
+//   job_overrides    — the HUMAN's verdict edits, never touched by classify, so a manual verdict
+//                      survives re-classification AND the LLM's opinion is preserved alongside it
+//                      (that pairing is the rubric-refinement dataset).
 //   fit_scores       — "is this worth applying to?" (0–10) vs the classifier's "can I take it?".
 //                      Own table, so `classify --force` can never destroy it. `persona_hash`
 //                      records which candidate persona produced the score, so editing the CV or
 //                      preferences marks scores stale and only those get re-scored.
+//   application_events — the funnel (shortlisted/applied/interview/rejected), APPEND-ONLY.
+//                      Not a `status` column on job_overrides, which is what an earlier note here
+//                      proposed: that would conflate "the classifier was wrong" with "I applied",
+//                      and a single column cannot hold history. A job that goes applied ->
+//                      interview -> rejected must keep all three timestamps.
 import Database from "better-sqlite3";
 import { config } from "./config.js";
-import type { Classification, FitScore, JobOverride, RawJob, Verdict } from "./types.js";
+import type {
+  Application,
+  ApplicationStatus,
+  Classification,
+  FitScore,
+  JobOverride,
+  RawJob,
+  Verdict,
+} from "./types.js";
 
 export type ClassificationMethod = "llm" | "language" | "manual";
 export interface JobWithMeta extends RawJob {
@@ -56,8 +67,23 @@ function db(): Database.Database {
       persona_hash TEXT NOT NULL,
       scored_at TEXT NOT NULL
     );
+    -- The application funnel, as an APPEND-ONLY log. Every status change is a new immutable
+    -- row, so a job that goes applied -> interview -> rejected keeps all three timestamps:
+    -- the rejection cannot overwrite the interview. Response-latency analytics fall out of
+    -- MIN(at) GROUP BY job_id, status, retroactively and for free.
+    --
+    -- Own table, like job_overrides and fit_scores: human-authored data must live where a
+    -- \`classify --force\` re-run cannot reach it.
+    CREATE TABLE IF NOT EXISTS application_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      note TEXT,
+      at TEXT NOT NULL
+    );
     CREATE INDEX IF NOT EXISTS idx_class_verdict ON classifications(verdict);
     CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
+    CREATE INDEX IF NOT EXISTS idx_app_events_job ON application_events(job_id, id);
   `);
   // Backward-compatible migration: add `timezone` to pre-existing jobs tables.
   const cols = _db.prepare(`PRAGMA table_info(jobs)`).all() as { name: string }[];
@@ -93,6 +119,11 @@ interface FitRow {
   f_angle: string | null; f_reason: string | null; f_model: string | null;
   f_persona_hash: string | null; f_scored_at: string | null;
 }
+/** LEFT JOINed funnel columns: the LATEST event, plus the FIRST `applied` timestamp. */
+interface AppRow {
+  a_status: string | null; a_note: string | null; a_at: string | null;
+  a_applied_at: string | null;
+}
 
 function rowToOverride(r: OverrideRow): JobOverride | undefined {
   if (!r.o_updated_at) return undefined; // no override row for this job
@@ -120,6 +151,16 @@ function rowToFit(r: FitRow): FitScore | undefined {
     model: r.f_model ?? "",
     personaHash: r.f_persona_hash ?? "",
     scoredAt: r.f_scored_at,
+  };
+}
+
+function rowToApplication(r: AppRow): Application | undefined {
+  if (!r.a_status || !r.a_at) return undefined; // no events for this job
+  return {
+    status: r.a_status as ApplicationStatus,
+    note: r.a_note,
+    appliedAt: r.a_applied_at ?? undefined,
+    statusAt: r.a_at,
   };
 }
 
@@ -248,28 +289,96 @@ export function upsertClassification(jobId: string, c: Classification, method: C
  *  `verdicts` filter applies to the EFFECTIVE verdict (the human's if set, else the LLM's). */
 export function classifiedJobs(
   verdicts?: Verdict[],
-): { job: JobWithMeta; classification: Classification; override?: JobOverride; fit?: FitScore }[] {
+): {
+  job: JobWithMeta;
+  classification: Classification;
+  override?: JobOverride;
+  fit?: FitScore;
+  application?: Application;
+}[] {
   const where = verdicts && verdicts.length
     ? `WHERE COALESCE(o.verdict, c.verdict) IN (${verdicts.map(() => "?").join(",")})`
     : "";
+  // `a` folds the append-only event log down to the CURRENT status (highest id per job).
+  // `ap` pulls the FIRST `applied` timestamp, which survives later interview/rejected events —
+  // that separation is what lets a rejection coexist with the interview that preceded it.
   const rows = db()
     .prepare(`SELECT j.*, c.verdict, c.reason, c.evidence, c.work_model, c.location_restriction,
                      c.timezone_requirement, c.timezone_overlap_ok, c.recruiter_question, c.method, c.classified_at,
                      o.verdict AS o_verdict, o.reason AS o_reason, o.rule_tag AS o_rule_tag, o.updated_at AS o_updated_at,
                      f.score AS f_score, f.strengths AS f_strengths, f.gaps AS f_gaps, f.angle AS f_angle,
-                     f.reason AS f_reason, f.model AS f_model, f.persona_hash AS f_persona_hash, f.scored_at AS f_scored_at
+                     f.reason AS f_reason, f.model AS f_model, f.persona_hash AS f_persona_hash, f.scored_at AS f_scored_at,
+                     a.status AS a_status, a.note AS a_note, a.at AS a_at, ap.applied_at AS a_applied_at
               FROM jobs j
               JOIN classifications c ON c.job_id = j.id
               LEFT JOIN job_overrides o ON o.job_id = j.id
               LEFT JOIN fit_scores f ON f.job_id = j.id
+              LEFT JOIN (
+                SELECT job_id, status, note, at FROM (
+                  SELECT *, ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY id DESC) AS rn
+                  FROM application_events
+                ) WHERE rn = 1
+              ) a ON a.job_id = j.id
+              LEFT JOIN (
+                SELECT job_id, MIN(at) AS applied_at FROM application_events
+                WHERE status = 'applied' GROUP BY job_id
+              ) ap ON ap.job_id = j.id
               ${where}`)
-    .all(...(verdicts ?? [])) as (JobRow & ClassRow & OverrideRow & FitRow)[];
+    .all(...(verdicts ?? [])) as (JobRow & ClassRow & OverrideRow & FitRow & AppRow)[];
   return rows.map((r) => ({
     job: rowToJob(r),
     classification: rowToClassification(r),
     override: rowToOverride(r),
     fit: rowToFit(r),
+    application: rowToApplication(r),
   }));
+}
+
+// ---- application funnel (append-only; never touched by classify/score) ----
+
+/** Append a transition. Never updates or deletes — history is the point. */
+export function addApplicationEvent(jobId: string, status: ApplicationStatus, note?: string | null): void {
+  db()
+    .prepare(`INSERT INTO application_events (job_id, status, note, at) VALUES (?, ?, ?, ?)`)
+    .run(jobId, status, note ?? null, new Date().toISOString());
+}
+
+/**
+ * Delete the job's most recent event, reverting to the one before it (or to no status).
+ * The mis-click path: without it, a fat-fingered click would be permanent. This is the only
+ * delete allowed against the log.
+ */
+export function undoLastApplicationEvent(jobId: string): boolean {
+  const info = db()
+    .prepare(`DELETE FROM application_events
+              WHERE id = (SELECT MAX(id) FROM application_events WHERE job_id = ?)`)
+    .run(jobId);
+  return info.changes > 0;
+}
+
+/**
+ * The job's current funnel position, or undefined if it has no events.
+ * Used by the undo endpoint, which must tell the card which status it fell BACK to.
+ */
+export function currentApplication(jobId: string): Application | undefined {
+  const r = db()
+    .prepare(`SELECT e.status AS a_status, e.note AS a_note, e.at AS a_at,
+                     (SELECT MIN(at) FROM application_events
+                       WHERE job_id = ? AND status = 'applied') AS a_applied_at
+              FROM application_events e
+              WHERE e.job_id = ?
+              ORDER BY e.id DESC LIMIT 1`)
+    .get(jobId, jobId) as AppRow | undefined;
+  return r ? rowToApplication(r) : undefined;
+}
+
+/** Annotate the latest event. A note is not a transition, so it updates rather than appends. */
+export function setApplicationNote(jobId: string, note: string | null): boolean {
+  const info = db()
+    .prepare(`UPDATE application_events SET note = ?
+              WHERE id = (SELECT MAX(id) FROM application_events WHERE job_id = ?)`)
+    .run(note && note.trim() ? note.trim() : null, jobId);
+  return info.changes > 0;
 }
 
 // ---- fit scores (never written by the classifier) ----

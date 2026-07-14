@@ -60,9 +60,7 @@ next-env.d.ts
 # job bot artifacts
 .job-cache.json
 .jobs-raw.json
-.jobs.db
-.jobs.db-shm
-.jobs.db-wal
+.jobs.db*
 .jobs-labels.jsonl
 jobs-digest.html
 scripts/jobs/fixtures/fit-fixtures.local.ts

@@ -129,10 +129,16 @@ export async function runClassify({ force = false, source }: { force?: boolean; 
   console.log(`  ${langRejected} rejected by language check (free); ${needLLM.length} via LLM...`);
 
   let done = 0;
+  let failed = 0;
   await pMap(needLLM, 5, async (job) => {
     try {
-      upsertClassification(job.id, await classifyJob(job), "llm");
+      const classification = await classifyJob(job);
+      // null = the model could not be reached. Write NOTHING: under --force an upsert here would
+      // overwrite a good verdict with a fabricated one. Leaving it alone is self-healing.
+      if (classification) upsertClassification(job.id, classification, "llm");
+      else failed++;
     } catch (e) {
+      failed++;
       console.warn(`  classify failed for ${job.id}: ${e instanceof Error ? e.message : e}`);
     } finally {
       done++;
@@ -140,7 +146,10 @@ export async function runClassify({ force = false, source }: { force?: boolean; 
     }
   });
   const c = counts();
-  console.log(`DB: ${c.classifications} classifications. By verdict: ${JSON.stringify(c.byVerdict)}`);
+  console.log(
+    `DB: ${c.classifications} classifications. By verdict: ${JSON.stringify(c.byVerdict)}` +
+      (failed ? `\n  !! ${failed} FAILED — left unchanged, not overwritten. Re-run to retry.` : ""),
+  );
 }
 
 /** SCORE: rate PASS/MAYBE jobs 0–10 for role fit against the candidate persona. Needs API key.
@@ -205,13 +214,16 @@ export async function runScore({ force = false, limit }: { force?: boolean; limi
 /** RENDER: join jobs + classifications (+ any human override) -> HTML. No API key, no network. */
 export function runRender(): void {
   const cutoff = Date.now() - config.newBadgeHours * 3_600_000;
-  const classified: ClassifiedJob[] = classifiedJobs().map(({ job, classification, override, fit }) => ({
-    ...job,
-    classification,
-    override,
-    fit,
-    isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
-  }));
+  const classified: ClassifiedJob[] = classifiedJobs().map(
+    ({ job, classification, override, fit, application }) => ({
+      ...job,
+      classification,
+      override,
+      fit,
+      application, // shown read-only here; only the review server can write it
+      isNew: new Date(job.firstSeenAt).getTime() >= cutoff,
+    }),
+  );
   writeFileSync(config.outputPath, renderDigest(classified), "utf8");
   const tally: Record<Verdict, number> = { PASS: 0, MAYBE: 0, REJECT: 0 };
   for (const j of classified) tally[effectiveVerdict(j)]++;

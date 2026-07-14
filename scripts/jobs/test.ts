@@ -14,6 +14,12 @@ async function main() {
 
   for (const fx of fixtures) {
     const c = await classifyJob(fx.job);
+    if (!c) {
+      // A failed API call is a broken test run, not a failed fixture. Don't score it as one.
+      failures++;
+      console.log(`ERROR ✗  ${fx.name}: classifier unreachable (see warning above)`);
+      continue;
+    }
     const ok = c.verdict === fx.expected;
     if (!ok) failures++;
     const mark = ok ? "PASS ✓" : "FAIL ✗";

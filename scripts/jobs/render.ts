@@ -1,13 +1,14 @@
 // Renders classified jobs into a single self-contained HTML digest with sticky
-// verdict + source filter chips at the top (inline JS; it's a local file, no CSP).
+// verdict + source + status filter chips at the top (inline JS; it's a local file, no CSP).
 //
 // Two modes:
-//   static  (`jobs:render`)  — the shareable artifact; read-only.
-//   review  (`jobs:review`)  — served by review-server.ts; each card gets an ✎ button that
-//                              opens a modal to override the verdict and record why.
+//   static  (`jobs:render`)  — the shareable artifact; read-only. Shows funnel status but
+//                              cannot change it: a static file has nowhere to write.
+//   review  (`jobs:review`)  — served by review-server.ts; each card gets an ✎ button to
+//                              override the verdict, and a status row to drive the funnel.
 // Cards always display the EFFECTIVE verdict (the human's override if set, else the LLM's).
 import { config } from "./config.js";
-import { effectiveVerdict, type ClassifiedJob, type Verdict } from "./types.js";
+import { effectiveVerdict, type ApplicationStatus, type ClassifiedJob, type Verdict } from "./types.js";
 
 const SOURCE_LABELS: Record<string, string> = {
   linkedin: "LinkedIn",
@@ -17,6 +18,32 @@ const SOURCE_LABELS: Record<string, string> = {
   remotive: "Remotive",
 };
 const sourceLabel = (s: string) => SOURCE_LABELS[s] ?? s;
+
+const STATUS_LABELS: Record<ApplicationStatus, string> = {
+  shortlisted: "Shortlist",
+  applied: "Applied",
+  interview: "Interview",
+  rejected: "Rejected",
+};
+
+/**
+ * The funnel BUCKETS a card can fall into — what the filter chips and the funnel bar count.
+ *
+ * Not the same list as `config.applicationStatuses` (the things you can click): `none` is the
+ * absence of any event, and `ghosted` is derived at read time from `applied` + elapsed days.
+ * Buckets are mutually exclusive, so every card lands in exactly one.
+ */
+const BUCKETS = ["none", "shortlisted", "applied", "interview", "ghosted", "rejected"] as const;
+const BUCKET_LABELS: Record<(typeof BUCKETS)[number], string> = {
+  none: "No status",
+  shortlisted: "Shortlisted",
+  applied: "Applied",
+  interview: "Interview",
+  ghosted: "Ghosted",
+  rejected: "Rejected",
+};
+/** Lit on load: the working queue — everything still needing a decision. */
+const DEFAULT_BUCKETS = new Set(["none", "shortlisted"]);
 
 function escapeHtml(s: string): string {
   return s
@@ -103,11 +130,36 @@ function card(job: ClassifiedJob, review: boolean): string {
        </div>`
     : "";
 
+  // Funnel. The pill's TEXT is filled in by the client (fillStatus) rather than baked in here,
+  // because "APPLIED · 3d" and the GHOSTED threshold are both relative to *now*: a digest left
+  // open overnight, or a static file opened a week later, must not show a stale day count.
+  // Same reason `data-posted-ms` exists. The server only ships the raw facts.
+  const app = job.application;
+  const appliedMs = app?.appliedAt ? new Date(app.appliedAt).getTime() : "";
+  const statusMs = app ? new Date(app.statusAt).getTime() : "";
+  const statusPill = app ? `<span class="status" data-role="pill"></span>` : "";
+  const noteText = app?.note
+    ? `<p class="app-note" data-role="note">${escapeHtml(app.note)}</p>`
+    : `<p class="app-note" data-role="note" hidden></p>`;
+  const statusBtns = config.applicationStatuses
+    .map(
+      (s) =>
+        `<button class="st" data-s="${s}" aria-pressed="${app?.status === s}">${STATUS_LABELS[s]}</button>`,
+    )
+    .join("");
+  const actionRow = review
+    ? `<div class="actions">
+         ${statusBtns}
+         <button class="note-btn" data-role="note-btn" title="Add a note" aria-label="Add a note"${app ? "" : " hidden"}>📝</button>
+       </div>`
+    : "";
+
   return `
-  <article class="card ${v}" data-job-id="${escapeHtml(job.id)}" data-verdict="${v}" data-llm-verdict="${c.verdict}" data-edited="${o?.verdict ? "1" : ""}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}" data-score="${f ? f.score : ""}" data-title="${escapeHtml(job.title)}" data-company="${escapeHtml(job.company)}" data-reason="${escapeHtml(o?.reason ?? "")}" data-rule-tag="${escapeHtml(o?.ruleTag ?? "")}">
+  <article class="card ${v}" data-job-id="${escapeHtml(job.id)}" data-verdict="${v}" data-llm-verdict="${c.verdict}" data-edited="${o?.verdict ? "1" : ""}" data-source="${escapeHtml(job.source)}" data-posted-ms="${postedAttr}" data-score="${f ? f.score : ""}" data-title="${escapeHtml(job.title)}" data-company="${escapeHtml(job.company)}" data-reason="${escapeHtml(o?.reason ?? "")}" data-rule-tag="${escapeHtml(o?.ruleTag ?? "")}" data-status="${app?.status ?? ""}" data-applied-ms="${appliedMs}" data-status-ms="${statusMs}">
     <div class="head">
       ${scoreChip}
       <span class="badge ${v}">${v}</span>
+      ${statusPill}
       ${editedBadge}
       ${newBadge}
       <h3><a href="${escapeHtml(job.url)}" target="_blank" rel="noopener">${escapeHtml(job.title)}</a></h3>
@@ -126,6 +178,8 @@ function card(job: ClassifiedJob, review: boolean): string {
     ${evidence}
     ${tz}
     ${recruiter}
+    ${noteText}
+    ${actionRow}
   </article>`;
 }
 
@@ -254,6 +308,86 @@ const REVIEW_JS = `
   });
 
   document.getElementById('m-cancel').addEventListener('click', function () { modal.close(); });
+
+  // ---- application funnel ----
+  // Repaint in place (never reload): mid-queue, a reload would lose scroll position and the
+  // active filter chips. Same reason the verdict modal repaints rather than refreshing.
+  function paintStatus(card, app) {
+    card.dataset.status = app ? app.status : '';
+    card.dataset.appliedMs = app && app.appliedAt ? String(new Date(app.appliedAt).getTime()) : '';
+    card.dataset.statusMs = app ? String(new Date(app.statusAt).getTime()) : '';
+
+    card.querySelectorAll('.st').forEach(function (b) {
+      b.setAttribute('aria-pressed', String(!!app && b.dataset.s === app.status));
+    });
+    var noteBtn = card.querySelector('[data-role="note-btn"]');
+    if (noteBtn) noteBtn.hidden = !app;
+    var noteEl = card.querySelector('[data-role="note"]');
+    if (noteEl) {
+      noteEl.textContent = (app && app.note) || '';
+      noteEl.hidden = !(app && app.note);
+    }
+    fillStatus(card);
+    apply();
+    refunnel();
+  }
+
+  document.querySelectorAll('.st').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var card = btn.closest('.card');
+      var want = btn.dataset.s;
+      // Clicking the ACTIVE status undoes it — the mis-click path. Anything else is a new event.
+      var isActive = btn.getAttribute('aria-pressed') === 'true';
+      var url = isActive ? '/status/undo' : '/status';
+      var body = isActive ? { jobId: card.dataset.jobId } : { jobId: card.dataset.jobId, status: want };
+      btn.disabled = true;
+      post(url, body).then(function (j) {
+        if (isActive) {
+          paintStatus(card, j.application || null); // may fall back to an EARLIER event, not none
+        } else {
+          var prevApplied = card.dataset.appliedMs;
+          paintStatus(card, {
+            status: want,
+            note: (card.querySelector('[data-role="note"]') || {}).textContent || null,
+            // applied_at is the FIRST time it entered 'applied' and survives later stages,
+            // so an interview/rejection must not clear the clock it was measured against.
+            appliedAt: want === 'applied' && !prevApplied ? j.at
+                     : prevApplied ? new Date(parseInt(prevApplied, 10)).toISOString() : undefined,
+            statusAt: j.at
+          });
+        }
+      }).catch(function (e) { alert(e.message); })
+        .then(function () { btn.disabled = false; });
+    });
+  });
+
+  var noteModal = document.getElementById('note-modal');
+  var nText = document.getElementById('n-text');
+  var nCompany = document.getElementById('n-company');
+  var nErr = document.getElementById('n-error');
+  var noteCard = null;
+
+  document.querySelectorAll('[data-role="note-btn"]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      noteCard = btn.closest('.card');
+      nErr.textContent = '';
+      nCompany.textContent = noteCard.dataset.company;
+      var el = noteCard.querySelector('[data-role="note"]');
+      nText.value = (el && el.textContent) || '';
+      noteModal.showModal();
+    });
+  });
+  document.getElementById('n-cancel').addEventListener('click', function () { noteModal.close(); });
+  document.getElementById('n-save').addEventListener('click', function () {
+    if (!noteCard) return;
+    nErr.textContent = '';
+    var text = nText.value.trim();
+    post('/status/note', { jobId: noteCard.dataset.jobId, note: text }).then(function () {
+      var el = noteCard.querySelector('[data-role="note"]');
+      if (el) { el.textContent = text; el.hidden = !text; }
+      noteModal.close();
+    }).catch(function (e) { nErr.textContent = e.message; });
+  });
 `;
 
 export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } = {}): string {
@@ -282,13 +416,28 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
         `<button class="chip source active" data-type="source" data-value="${escapeHtml(s)}">${escapeHtml(sourceLabel(s))} <span class="chip-n">${sourceCounts.get(s)}</span></button>`,
     )
     .join("");
+  // Status chips default to the working queue (no-status + shortlisted): open the digest and
+  // you see only what still needs a decision. Everything acted on is one click away.
+  const statusChips = BUCKETS.map(
+    (b) =>
+      `<button class="chip status-chip ${b}${DEFAULT_BUCKETS.has(b) ? " active" : ""}" data-type="status" data-value="${b}">${BUCKET_LABELS[b]}</button>`,
+  ).join("");
+  // Counts are filled in by refunnel() against the live clock — `ghosted` depends on elapsed
+  // days, so a server-rendered number would be wrong the moment the page sat open.
+  const funnelBar = BUCKETS.filter((b) => b !== "none")
+    .map(
+      (b) =>
+        `<button class="fn ${b}" data-bucket="${b}"><b>0</b> <span>${BUCKET_LABELS[b].toLowerCase()}</span></button>`,
+    )
+    .join("");
 
   // Flat list: undated first, then newest → oldest.
   const listCards =
     [...jobs].sort(byPostedDesc).map((j) => card(j, review)).join("\n") || `<p class="none">No jobs.</p>`;
 
-  // One shared modal for editing a job's attributes (review mode only). Today it edits the
-  // verdict + reason + rule tag; a Viewed/Applied status control slots in here later.
+  // One shared modal for editing a job's VERDICT (review mode only) — reason + rule tag.
+  // Funnel status is deliberately NOT here: it lives on the card as a one-click button row,
+  // because it is used two or three times a day and a modal would cost three clicks each time.
   const tagOptions = config.ruleTags.map((t) => `<option value="${t}">${t}</option>`).join("");
   const modal = review
     ? `
@@ -317,6 +466,20 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
       <button type="button" id="m-save" class="primary">Save</button>
     </div>
     <p class="m-error" id="m-error"></p>
+  </form>
+</dialog>
+<dialog id="note-modal">
+  <form method="dialog">
+    <h2>Note</h2>
+    <p class="m-sub"><span id="n-company"></span></p>
+    <label class="m-label" for="n-text">Anything worth remembering about this application?</label>
+    <textarea id="n-text" rows="3" placeholder="e.g. referred by X · recruiter said they'd reply in 2 weeks"></textarea>
+    <div class="m-actions">
+      <span class="m-spacer"></span>
+      <button type="button" id="n-cancel">Cancel</button>
+      <button type="button" id="n-save" class="primary">Save</button>
+    </div>
+    <p class="m-error" id="n-error"></p>
   </form>
 </dialog>`
     : "";
@@ -375,6 +538,29 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   .fit ul.good li { color: #1a7f37; }
   .fit ul.bad li { color: #9a3412; }
   .fit ul li span, .fit ul li { color: inherit; }
+  /* Funnel: status pill on the card, action row, filter chips, funnel bar. */
+  .status { font-size: 10px; font-weight: 700; letter-spacing: .04em; padding: 2px 7px;
+            border-radius: 999px; color: #fff; white-space: nowrap; }
+  .status.shortlisted { background: #6e7781; }
+  .status.applied     { background: #0969da; }
+  .status.interview   { background: #1a7f37; }
+  .status.ghosted     { background: #bf8700; }  /* same warning colour as a weak fit band */
+  .status.rejected    { background: #cf222e; }
+  .actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 10px 0 0;
+             padding-top: 10px; border-top: 1px solid #eee; }
+  .st { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 999px; cursor: pointer;
+        border: 1px solid #d0d7de; background: transparent; color: #57606a; }
+  .st:hover { background: #f0f2f4; color: #1a1a1a; }
+  .st[aria-pressed="true"] { background: #1a1a1a; border-color: #1a1a1a; color: #fff; }
+  .note-btn { font-size: 12px; padding: 4px 8px; border-radius: 6px; cursor: pointer;
+              border: 1px solid #d0d7de; background: transparent; margin-left: auto; }
+  .app-note { margin: 8px 0 0; font-size: 13px; color: #57606a; font-style: italic; }
+  .chip.status-chip.active { background: #1a1a1a; border-color: #1a1a1a; color: #fff; }
+  .funnel-row { gap: 4px; }
+  .fn { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; cursor: pointer;
+        border: 1px solid transparent; background: #f0f2f4; color: #57606a; }
+  .fn:hover { border-color: #d0d7de; }
+  .fn b { color: #1a1a1a; }
   /* Edit button pinned to the card's top-right. */
   .edit { margin-left: auto; cursor: pointer; font-size: 14px; line-height: 1; padding: 4px 8px;
           border: 1px solid #d0d7de; border-radius: 6px; background: transparent; color: #57606a; }
@@ -444,10 +630,19 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
     .edit:hover { background: #21262d; color: #e6edf3; }
     .override .why { color: #c9d1d9; }
     .override .tag { background: #21262d; color: #8b949e; }
-    #edit-modal { background: #161b22; border-color: #30363d; color: #e6edf3; }
-    .segmented button, .m-actions button, #m-reason, #m-tag { border-color: #444c56; color: #c9d1d9; }
-    #m-reason, #m-tag { background: #0d1117; }
+    #edit-modal, #note-modal { background: #161b22; border-color: #30363d; color: #e6edf3; }
+    .segmented button, .m-actions button, #m-reason, #m-tag, #n-text { border-color: #444c56; color: #c9d1d9; }
+    #m-reason, #m-tag, #n-text { background: #0d1117; }
     .m-actions .primary { background: #1f6feb; color: #fff; }
+    .actions { border-top-color: #30363d; }
+    .st, .note-btn { border-color: #444c56; color: #8b949e; }
+    .st:hover, .note-btn:hover { background: #21262d; color: #e6edf3; }
+    .st[aria-pressed="true"] { background: #e6edf3; border-color: #e6edf3; color: #0d1117; }
+    .app-note { color: #8b949e; }
+    .chip.status-chip.active { background: #e6edf3; border-color: #e6edf3; color: #0d1117; }
+    .fn { background: #21262d; color: #8b949e; }
+    .fn b { color: #e6edf3; }
+    .fn:hover { border-color: #444c56; }
   }
 </style>
 </head>
@@ -457,6 +652,8 @@ export function renderDigest(jobs: ClassifiedJob[], opts: { review?: boolean } =
   <div class="summary">Generated ${now} · <span id="tally">${jobs.length} classified · ${pass.length} PASS · ${maybe.length} MAYBE · ${reject.length} REJECT${edited ? ` · ${edited} edited by hand` : ""}</span>${scored ? ` · ${scored} scored for fit` : ""} · candidate UTC+7 (Bangkok)</div>
 </header>
 <div class="filters">
+  <div class="filter-row funnel-row"><span class="filter-label">Funnel</span><span id="funnel">${funnelBar}</span></div>
+  <div class="filter-row"><span class="filter-label">Status</span>${statusChips}</div>
   <div class="filter-row"><span class="filter-label">Verdict</span>${verdictChips}</div>
   <div class="filter-row"><span class="filter-label">Source</span>${sourceChips}</div>
   <div class="filter-row"><span class="filter-label">Posted</span>
@@ -489,7 +686,9 @@ ${modal}
 <script>
 (function () {
   var DAY_MS = 86400000;
-  var state = { verdict: {}, source: {} };
+  var GHOST_DAYS = ${config.ghostedAfterDays};
+  var BUCKET_LABELS = ${JSON.stringify(BUCKET_LABELS)};
+  var state = { verdict: {}, source: {}, status: {} };
   var chips = document.querySelectorAll('.chip');
   chips.forEach(function (c) { state[c.dataset.type][c.dataset.value] = c.classList.contains('active'); });
   var cards = Array.prototype.slice.call(document.querySelectorAll('.card'));
@@ -511,6 +710,38 @@ ${modal}
     var raw = card.dataset.score;
     if (!raw) return true;                   // unscored → never silently lost
     return parseFloat(raw) >= min;
+  }
+  // Which funnel bucket a card is in, RIGHT NOW. 'ghosted' is derived here rather than stored:
+  // it is 'applied' plus elapsed silence, so it can only be decided against the live clock.
+  // A digest left open overnight re-derives it on the next apply(); a stored flag would rot.
+  function bucketOf(card) {
+    var s = card.dataset.status;
+    if (!s) return 'none';
+    if (s === 'applied') {
+      var raw = card.dataset.appliedMs;
+      if (raw && (Date.now() - parseInt(raw, 10)) >= GHOST_DAYS * DAY_MS) return 'ghosted';
+    }
+    return s;
+  }
+  function meetsStatus(card) { return !!state.status[bucketOf(card)]; }
+  // Paint the pill: "APPLIED · 3d". Text lives here, not in the server-rendered HTML, for the
+  // same reason bucketOf() does — the day count is relative to now.
+  function fillStatus(card) {
+    var pill = card.querySelector('[data-role="pill"]');
+    var b = bucketOf(card);
+    if (!pill) return;
+    if (b === 'none') { pill.hidden = true; return; }
+    pill.hidden = false;
+    pill.className = 'status ' + b;
+    // APPLIED/GHOSTED count from the application date (how long the silence has run).
+    // INTERVIEW/REJECTED/SHORTLISTED count from when that status was set.
+    var since = (b === 'applied' || b === 'ghosted') ? card.dataset.appliedMs : card.dataset.statusMs;
+    var label = BUCKET_LABELS[b].toUpperCase();
+    if (since) {
+      var d = Math.floor((Date.now() - parseInt(since, 10)) / DAY_MS);
+      label += ' · ' + d + 'd';
+    }
+    pill.textContent = label;
   }
   // Re-order the DOM. Unscored jobs sort last under "fit score"; undated first under "date".
   function sortCards() {
@@ -542,11 +773,21 @@ ${modal}
     tallyEl.textContent = cards.length + ' classified · ' + t.PASS + ' PASS · ' + t.MAYBE +
       ' MAYBE · ' + t.REJECT + ' REJECT' + (edited ? ' · ' + edited + ' edited by hand' : '');
   }
+  // Funnel counts, recomputed from the live DOM so they stay true after a status change.
+  var funnelEl = document.getElementById('funnel');
+  function refunnel() {
+    if (!funnelEl) return;
+    var t = {};
+    cards.forEach(function (c) { var b = bucketOf(c); t[b] = (t[b] || 0) + 1; });
+    funnelEl.querySelectorAll('[data-bucket]').forEach(function (el) {
+      el.querySelector('b').textContent = t[el.dataset.bucket] || 0;
+    });
+  }
   function apply() {
     var shown = 0;
     cards.forEach(function (card) {
       var show = state.verdict[card.dataset.verdict] && state.source[card.dataset.source]
-        && withinWindow(card) && meetsScore(card);
+        && meetsStatus(card) && withinWindow(card) && meetsScore(card);
       card.style.display = show ? '' : 'none';
       if (show) shown++;
     });
@@ -563,9 +804,28 @@ ${modal}
   dateSel.addEventListener('change', apply);
   minScoreSel.addEventListener('change', apply);
   sortSel.addEventListener('change', sortCards);
+
+  // Funnel bar doubles as a shortcut: clicking a bucket isolates it.
+  if (funnelEl) {
+    funnelEl.querySelectorAll('[data-bucket]').forEach(function (el) {
+      el.addEventListener('click', function () {
+        var want = el.dataset.bucket;
+        chips.forEach(function (c) {
+          if (c.dataset.type !== 'status') return;
+          var on = c.dataset.value === want;
+          state.status[c.dataset.value] = on;
+          c.classList.toggle('active', on);
+        });
+        apply();
+      });
+    });
+  }
+
+  cards.forEach(fillStatus);
   sortCards();
   apply();
   recount();
+  refunnel();
 ${review ? REVIEW_JS : ""}
 })();
 </script>
