@@ -187,10 +187,15 @@ export async function runScore({ force = false, limit }: { force?: boolean; limi
 
   let done = 0;
   let failed = 0;
+  let newlyScored = 0; // jobs given a score in THIS run (siblings included), vs the DB total below
   await pMap(reps, 4, async (siblings) => {
     const fit = await scoreJob(siblings[0], candidate);
-    if (fit) for (const s of siblings) setFitScore(s.id, fit, config.scoringModel, hash);
-    else failed++;
+    if (fit) {
+      for (const s of siblings) {
+        setFitScore(s.id, fit, config.scoringModel, hash);
+        newlyScored++;
+      }
+    } else failed++;
     done++;
     if (done % 10 === 0 || done === reps.length) console.log(`  scored ${done}/${reps.length} unique`);
   });
@@ -202,7 +207,13 @@ export async function runScore({ force = false, limit }: { force?: boolean; limi
     const s = fit!.score;
     buckets[s >= 8 ? "8–10" : s >= 6 ? "6–8" : s >= 4 ? "4–6" : "0–4"]++;
   }
-  console.log(`\nDB: ${scored.length} scored${failed ? `, ${failed} failed (left unscored, not faked)` : ""}.`);
+  // Report this run's work distinctly from the cumulative DB total — otherwise "N scored" reads
+  // as if the whole database was just re-scored (it usually wasn't; unchanged scores are kept).
+  console.log(
+    `\nScored ${newlyScored} job(s) this run (${reps.length - failed} unique call(s))` +
+      `${failed ? `, ${failed} failed (left unscored, not faked)` : ""}.`,
+  );
+  console.log(`  ${scored.length} scored in total.`);
   console.log(`  Distribution: ${Object.entries(buckets).map(([k, v]) => `${k}: ${v}`).join(" · ")}`);
   const top = scored.sort((a, b) => b.fit!.score - a.fit!.score).slice(0, 5);
   if (top.length) {
